@@ -1,8 +1,7 @@
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
-import numpy as np
+from typing import List, Optional
 from PySide6.QtCore import QPointF, QRectF
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QBrush
+from PySide6.QtGui import QColor, QImage, QPainter, QPen
 
 
 @dataclass
@@ -11,7 +10,7 @@ class Stroke:
     points: List[QPointF] = field(default_factory=list)
     color: QColor = field(default_factory=lambda: QColor(0, 0, 0))
     thickness: float = 3.0
-    tool: str = "brush"  # "brush" или "eraser"
+    tool: str = "brush"
 
 
 class CanvasModel:
@@ -33,7 +32,7 @@ class CanvasModel:
         # Настройки по умолчанию
         self.current_color = QColor(0, 0, 0)
         self.current_thickness = 3.0
-        self.current_tool = "brush"  # "brush" или "eraser"
+        self.current_tool = "brush"
         
         # Изображение холста
         self._image = QImage(width, height, QImage.Format.Format_ARGB32)
@@ -50,8 +49,6 @@ class CanvasModel:
             tool=tool
         )
         self.current_stroke.points.append(pos)
-        
-        # Очищаем redo stack при новом действии
         self.redo_stack.clear()
     
     def continue_stroke(self, pos: QPointF):
@@ -108,7 +105,6 @@ class CanvasModel:
         new_image = QImage(width, height, QImage.Format.Format_ARGB32)
         new_image.fill(self.background_color)
         
-        # Перерисовываем существующие штрихи на новом изображении
         painter = QPainter(new_image)
         painter.drawImage(0, 0, self._image)
         painter.end()
@@ -139,7 +135,6 @@ class CanvasModel:
         
         painter.setPen(pen)
         
-        # Рисуем полилинию через точки
         for i in range(len(stroke.points) - 1):
             painter.drawLine(stroke.points[i], stroke.points[i + 1])
     
@@ -147,3 +142,36 @@ class CanvasModel:
     def image(self) -> QImage:
         """Получение текущего изображения холста"""
         return self._image
+
+
+class RenderEngine:
+    """Движок для базовой отрисовки холста"""
+    
+    def __init__(self, canvas_model: CanvasModel):
+        self.canvas_model = canvas_model
+    
+    def render_to_painter(self, painter: QPainter, target_rect: QRectF):
+        """Отрисовка холста на QPainter"""
+        # Отрисовываем основное изображение холста
+        source_rect = QRectF(0, 0, self.canvas_model.width, self.canvas_model.height)
+        painter.drawImage(target_rect, self.canvas_model.image, source_rect)
+        
+        # Отрисовываем текущий активный штрих
+        if self.canvas_model.current_stroke:
+            self._draw_current_stroke(painter)
+    
+    def _draw_current_stroke(self, painter: QPainter):
+        """Отрисовка текущего активного штриха"""
+        stroke = self.canvas_model.current_stroke
+        if len(stroke.points) < 2:
+            return
+        
+        pen = QPen(stroke.color)
+        pen.setWidthF(stroke.thickness)
+        pen.setCapStyle(QPen.CapStyle.RoundCap)
+        pen.setJoinStyle(QPen.JoinStyle.RoundJoin)
+        
+        painter.setPen(pen)
+        
+        for i in range(len(stroke.points) - 1):
+            painter.drawLine(stroke.points[i], stroke.points[i + 1])
