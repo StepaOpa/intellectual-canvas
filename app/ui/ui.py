@@ -1,15 +1,20 @@
-
 """
-Intelligent Canvas - UI Prototype (Week 1)
-Clean, flat design without shadows or glow effects.
+Intelligent Canvas - UI Prototype (Week 2)
+
+Changes for Week 2 (Хамитов Дамир):
+- Улучшенные панели инструментов (Brush, Eraser, Fill, Picker) with keyboard shortcuts
+- Явный визуальный индикатор активного режима (иконка + текст) в верхней панели
+- Активное состояние для образцов цвета и размера кисти (подсветка)
+- Обновление индикатора текущего цвета через setter (без прямого доступа к приватным полям)
+- Небольшие UX-улучшения: быстрый сброс режима Fill после применения, фокус клавиатуры
 """
 
 import sys
 import random
-from typing import Optional
+from typing import Optional, Dict
 
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QPainter, QColor, QFont, QPen, QPixmap, QPaintEvent
+from PySide6.QtGui import QPainter, QColor, QFont, QPen, QPixmap, QPaintEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFrame, QSizePolicy, QStatusBar
@@ -32,6 +37,7 @@ class HandTrackingService:
         return random.randint(55, 60)
 # --- End of Stub Classes ---
 
+
 class CanvasWidget(QWidget):
     """
     Виджет холста. Поддерживает заполнение фона цветом.
@@ -40,11 +46,11 @@ class CanvasWidget(QWidget):
     def __init__(self, canvas_model: CanvasModel, parent=None):
         super().__init__(parent)
         self._model = canvas_model
-        self._render_engine = RenderEngine() # Заглушка
+        self._render_engine = RenderEngine()  # Заглушка
         self.setMinimumSize(900, 600)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._grid_pixmap: Optional[QPixmap] = None
-        self.setStyleSheet("background-color: #F3F5F7;") # Базовый фон
+        self.setStyleSheet("background-color: #F3F5F7;")  # Базовый фон
 
     def fill_with_color(self, color_hex: str) -> None:
         """Заполнить фон указанным цветом (hex string)."""
@@ -119,13 +125,13 @@ class ToolButton(QPushButton):
             color: white;
             border: 2px solid #5A7FFF;
         """ if self._is_active else ""
-        
+
         inactive_style = """
             background-color: #FFFFFF;
             color: #333333;
             border: 2px solid #E0E0E0;
         """
-        
+
         self.setStyleSheet(f"""
             QPushButton {{
                 {active_style if self._is_active else inactive_style}
@@ -145,17 +151,28 @@ class ToolButton(QPushButton):
 
 
 class ColorSwatchButton(ToolButton):
-    """Кнопка-образец цвета."""
+    """Кнопка-образец цвета с возможностью пометить как выбранную."""
     def __init__(self, color_hex: str = "#3498DB", tooltip: str = "", size: int = 44, parent=None):
         self._color_hex = color_hex
         super().__init__(tooltip=tooltip or color_hex, icon_text="", parent=parent, size=size)
+        self._is_selected = False
+        self._init_style()
+
+    @property
+    def color_hex(self) -> str:
+        return self._color_hex
+
+    def set_selected(self, selected: bool) -> None:
+        self._is_selected = selected
         self._init_style()
 
     def _init_style(self):
+        # выделяем белой рамкой если выбран
+        border = "2px solid #FFFFFF" if not getattr(self, '_is_selected', False) else "3px solid #5A7FFF"
         self.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self._color_hex};
-                border: 2px solid #FFFFFF;
+                border: {border};
                 border-radius: {self._size // 2}px;
                 min-width: {self._size}px;
                 min-height: {self._size}px;
@@ -194,13 +211,20 @@ class MainWindow(QMainWindow):
 
         self._current_tool = "Brush"
         self._current_color = "#3498DB"
+        self._current_brush_size = 12
+
+        # UI state references
+        self._tool_buttons: Dict[str, ToolButton] = {}
+        self._color_swatches: list[ColorSwatchButton] = []
+        self._brush_size_buttons: list[BrushSizeButton] = []
 
         self._init_ui()
         self._setup_timers()
+        self._setup_shortcuts()
 
     def _init_ui(self):
         """Инициализация пользовательского интерфейса."""
-        self.setWindowTitle("Intelligent Canvas — Prototype")
+        self.setWindowTitle("Intelligent Canvas — Prototype (Week 2)")
         self.resize(1400, 900)
         self.setStyleSheet("QMainWindow { background-color: #E9EEF3; }")
 
@@ -210,9 +234,11 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(12)
 
-        # 1. Верхняя панель: палитра цветов + кнопка настройки цветов
+        # 1. Верхняя панель: палитра цветов + индикатор режима
         self._create_top_palette_bar(main_layout)
 
+        self._create_application_status_bar()
+        
         # 2. Центральная область
         middle_layout = QHBoxLayout()
         middle_layout.setSpacing(12)
@@ -224,11 +250,9 @@ class MainWindow(QMainWindow):
         # 3. Нижняя панель
         self._create_bottom_status_bar(main_layout)
 
-        # 4. Строка состояния
-        self._create_application_status_bar()
 
     def _create_top_palette_bar(self, parent_layout: QVBoxLayout) -> None:
-        """Создает верхнюю панель с палитрой цветов и кнопкой настройки."""
+        """Создает верхнюю панель с палитрой цветов и индикатором активного режима."""
         palette_frame = QFrame()
         palette_frame.setFixedHeight(96)
         palette_frame.setStyleSheet("QFrame { background: #2C3E50; border-radius: 8px; }")
@@ -236,10 +260,10 @@ class MainWindow(QMainWindow):
         palette_layout.setContentsMargins(18, 12, 18, 12)
         palette_layout.setSpacing(14)
 
-        # Заголовок
-        title = QLabel("Палитра")
-        title.setStyleSheet("color: #ECF0F1; font-weight: 700; font-size: 16px;")
-        palette_layout.addWidget(title)
+        # Индикатор активного режима (иконка + текст)
+        self._active_mode_label = QLabel("🖌 Brush")
+        self._active_mode_label.setStyleSheet("color: #ECF0F1; font-weight: 700; font-size: 16px;")
+        palette_layout.addWidget(self._active_mode_label)
 
         # Контейнер для образцов цвета
         swatches_container = QWidget()
@@ -252,14 +276,18 @@ class MainWindow(QMainWindow):
                   "#3498DB", "#9B59B6", "#E91E63", "#2C3E50"]
         for color_hex in colors:
             swatch = ColorSwatchButton(color_hex, tooltip=color_hex)
-            swatch.clicked.connect(lambda checked, col=color_hex: self._on_color_swatch_clicked(col))
+            swatch.clicked.connect(lambda checked, col=color_hex, btn=swatch: self._on_color_swatch_clicked(col, btn))
             swatches_layout.addWidget(swatch)
+            self._color_swatches.append(swatch)
 
         palette_layout.addWidget(swatches_container, stretch=1)
 
         # Индикатор текущего цвета
         self._current_color_indicator = ColorSwatchButton(self._current_color, "Текущий цвет", 44)
         self._current_color_indicator.setEnabled(False)
+        # отметить текущий цвет среди образцов если совпадает
+        for s in self._color_swatches:
+            s.set_selected(s.color_hex.lower() == self._current_color.lower())
         palette_layout.addWidget(self._current_color_indicator)
 
         # Кнопка "Настроить цвета" вместо "Режим заливки"
@@ -294,12 +322,11 @@ class MainWindow(QMainWindow):
         toolbar_layout.setSpacing(14)
 
         tools = [
-            ("Brush", "🖌", "Кисть"),
-            ("Eraser", "🧽", "Ластик"),
-            ("Fill", "🪣", "Заливка"),
-            ("Picker", "💧", "Пипетка")
+            ("Brush", "🖌", "Кисть (B)"),
+            ("Eraser", "🧽", "Ластик (E)"),
+            ("Fill", "🪣", "Заливка (F)"),
+            ("Picker", "💧", "Пипетка (P)")
         ]
-        self._tool_buttons = {}
         for tool_id, icon, tooltip in tools:
             btn = ToolButton(tooltip, icon, size=56)
             btn.setProperty('tool_id', tool_id)
@@ -365,13 +392,17 @@ class MainWindow(QMainWindow):
 
         for size in (6, 12, 20, 36):
             btn = BrushSizeButton(size)
-            btn.clicked.connect(lambda checked, s=size: self._on_brush_size_selected(s))
+            btn.clicked.connect(lambda checked, s=size, b=btn: self._on_brush_size_selected(s, b))
             info_layout.addWidget(btn)
+            self._brush_size_buttons.append(btn)
 
         fps_widget = self._create_fps_widget()
         info_layout.addWidget(fps_widget)
 
         parent_layout.addWidget(info_frame)
+
+        # отметить текущий размер кисти
+        self._update_brush_size_buttons()
 
     def _create_fps_widget(self) -> QFrame:
         """Создает виджет для отображения FPS."""
@@ -409,6 +440,13 @@ class MainWindow(QMainWindow):
         self._fps_timer.timeout.connect(self._update_fps_display)
         self._fps_timer.start(500)
 
+    def _setup_shortcuts(self) -> None:
+        """Клавиатурные сокращения для быстрого переключения инструментов."""
+        QShortcut(QKeySequence("B"), self, activated=lambda: self._set_active_tool("Brush"))
+        QShortcut(QKeySequence("E"), self, activated=lambda: self._set_active_tool("Eraser"))
+        QShortcut(QKeySequence("F"), self, activated=lambda: self._set_active_tool("Fill"))
+        QShortcut(QKeySequence("P"), self, activated=lambda: self._set_active_tool("Picker"))
+
     def _update_fps_display(self) -> None:
         """Обновляет значение FPS в UI."""
         current_fps = self._hand_tracker.get_fps()
@@ -420,18 +458,25 @@ class MainWindow(QMainWindow):
         clicked_button = self.sender()
         tool_id = clicked_button.property('tool_id')
         self._set_active_tool(tool_id)
-        
+
         if tool_id == "Fill":
-            # При выборе заливки автоматически активируется режим заливки фона
+            # При выборе заливки показываем подсказку
             self.status_bar.showMessage("Режим заливки фона: кликните на цвет в палитре")
         else:
             self.status_bar.showMessage(f"Активный инструмент: {tool_id}")
 
     def _set_active_tool(self, tool_id: str) -> None:
-        """Устанавливает активный инструмент."""
+        """Устанавливает активный инструмент и обновляет UI-индикатор."""
+        # сброс старого режима Fill если пользователь снова выбирает тот же инструмент (toggle off)
+        previous = self._current_tool
         self._current_tool = tool_id
         for tid, btn in self._tool_buttons.items():
             btn.set_active(tid == tool_id)
+
+        # Обновляем верхний индикатор
+        icon = self._tool_buttons.get(tool_id).text() if tool_id in self._tool_buttons else ""
+        self._active_mode_label.setText(f"{icon} {tool_id}")
+        self.status_bar.showMessage(f"Активный инструмент: {tool_id}")
 
     def _on_control_action(self, action_id: str) -> None:
         """Обрабатывает действия управления."""
@@ -441,26 +486,36 @@ class MainWindow(QMainWindow):
             message = "Холст очищен."
         self.status_bar.showMessage(message)
 
-    def _on_brush_size_selected(self, size: int) -> None:
-        """Обрабатывает выбор размера кисти."""
+    def _on_brush_size_selected(self, size: int, btn: BrushSizeButton) -> None:
+        """Обрабатывает выбор размера кисти и отмечает выбранную кнопку."""
+        self._current_brush_size = size
+        self._update_brush_size_buttons()
         self.status_bar.showMessage(f"Размер кисти изменен на {size}px")
 
+    def _update_brush_size_buttons(self) -> None:
+        for b in self._brush_size_buttons:
+            b.set_active(b.brush_size == self._current_brush_size)
+
     def _on_custom_colors_clicked(self) -> None:
-        """Обрабатывает клик по кнопке 'Настроить цвета'."""
-        # Заглушка для будущего диалога настройки цветов
+        """Обрабатывает клик по кнопке 'Настроить цвета' (заглушка)."""
         self.status_bar.showMessage("Диалог настройки пользовательских цветов (в разработке)")
 
-    def _on_color_swatch_clicked(self, color_hex: str) -> None:
-        """Обрабатывает клик на образце цвета."""
+    def _on_color_swatch_clicked(self, color_hex: str, btn: ColorSwatchButton) -> None:
+        """Обрабатывает клик на образце цвета. Если выбран Fill - заливаем холст, иначе - выбираем цвет кисти."""
         if self._current_tool == "Fill":
             # Если выбран инструмент "Заливка" - заливаем фон
             self.canvas_widget.fill_with_color(color_hex)
             self.status_bar.showMessage(f"Фон холста изменен на {color_hex}")
+            # после применения заливки возвращаемся к кисти (более предсказуемое поведение)
+            self._set_active_tool("Brush")
         else:
             # Иначе выбираем цвет для кисти
             self._current_color = color_hex
+            # обновляем индикаторы цвета
             self._current_color_indicator._color_hex = color_hex
             self._current_color_indicator._init_style()
+            for s in self._color_swatches:
+                s.set_selected(s is btn)
             self.status_bar.showMessage(f"Цвет кисти изменен на {color_hex}")
 
 
