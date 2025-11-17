@@ -17,7 +17,8 @@ from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QPainter, QColor, QFont, QPen, QPixmap, QPaintEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QFrame, QSizePolicy, QStatusBar
+    QPushButton, QLabel, QFrame, QSizePolicy, QStatusBar,
+    QFileDialog, QDialog, QCheckBox, QComboBox, QSlider, QDialogButtonBox
 )
 
 # --- Stub Classes for Future Integration ---
@@ -27,7 +28,7 @@ class CanvasModel:
         self.background_color: Optional[QColor] = None
 
 class RenderEngine:
-    """Заглушка движка рендеринга. В будушем будет отвечать за отрисовку."""
+    """Заглушка движка рендеринга. В будущем будет отвечать за отрисовку."""
     pass
 
 class HandTrackingService:
@@ -48,9 +49,11 @@ class CanvasWidget(QWidget):
         self._model = canvas_model
         self._render_engine = RenderEngine()  # Заглушка
         self.setMinimumSize(900, 600)
+        self.show_grid = True
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._grid_pixmap: Optional[QPixmap] = None
         self.setStyleSheet("background-color: #F3F5F7;")  # Базовый фон
+        self._grid_step = 80
 
     def fill_with_color(self, color_hex: str) -> None:
         """Заполнить фон указанным цветом (hex string)."""
@@ -79,7 +82,8 @@ class CanvasWidget(QWidget):
         pen = QPen(QColor(0, 0, 0, 15))
         pen.setWidth(1)
         painter.setPen(pen)
-        step = 80
+        step = getattr(self._model, "grid_step", 80) if hasattr(self._model, "grid_step") else self._grid_step
+
         for x in range(0, w, step):
             painter.drawLine(x, 0, x, h)
         for y in range(0, h, step):
@@ -97,10 +101,12 @@ class CanvasWidget(QWidget):
         painter.fillRect(self.rect(), bg_color)
 
         # 2. Рисуем сетку поверх фона
-        if self._grid_pixmap is None or self._grid_pixmap.size() != self.size():
-            self._regen_grid()
-        if self._grid_pixmap:
-            painter.drawPixmap(0, 0, self._grid_pixmap)
+        if self.show_grid:
+            if self._grid_pixmap is None or self._grid_pixmap.size() != self.size():
+                self._regen_grid()
+            if self._grid_pixmap:
+                painter.drawPixmap(0, 0, self._grid_pixmap)
+
 
 
 class ToolButton(QPushButton):
@@ -221,6 +227,32 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._setup_timers()
         self._setup_shortcuts()
+
+    def _save_canvas(self):
+        """Сохраняет видимое содержимое холста как PNG."""
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить изображение", "", "PNG Files (*.png)")
+        if not path:
+            return
+
+        pixmap = self.canvas_widget.grab()
+        pixmap.save(path, "PNG")
+        self.status_bar.showMessage(f"Файл сохранён: {path}")
+
+    def _open_image(self):
+        """Открывает изображение и устанавливает его как фон."""
+        path, _ = QFileDialog.getOpenFileName(self, "Открыть изображение", "", "Images (*.png *.jpg)")
+        if not path:
+            return
+
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            self.status_bar.showMessage("Не удалось открыть файл.")
+            return
+
+        # Берём средний цвет картинки для фона (т.к. кистей ещё нет)
+        avg = pixmap.scaled(1, 1).toImage().pixelColor(0, 0).name()
+        self.canvas_widget.fill_with_color(avg)
+        self.status_bar.showMessage(f"Фон установлен из файла: {path}")
 
     def _init_ui(self):
         """Инициализация пользовательского интерфейса."""
@@ -479,12 +511,24 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Активный инструмент: {tool_id}")
 
     def _on_control_action(self, action_id: str) -> None:
-        """Обрабатывает действия управления."""
-        message = f"Действие: {action_id}"
+        if action_id == "Save":
+            self._save_canvas()
+            return
+
+        if action_id == "Open":
+            self._open_image()
+            return
+
+        if action_id == "Settings":
+            dlg = SettingsDialog(self, self.canvas_widget)
+            dlg.exec()
+            return
+
         if action_id == "Clear":
             self.canvas_widget.clear_fill()
-            message = "Холст очищен."
-        self.status_bar.showMessage(message)
+            self.status_bar.showMessage("Холст очищен.")
+            return
+
 
     def _on_brush_size_selected(self, size: int, btn: BrushSizeButton) -> None:
         """Обрабатывает выбор размера кисти и отмечает выбранную кнопку."""
@@ -518,6 +562,44 @@ class MainWindow(QMainWindow):
                 s.set_selected(s is btn)
             self.status_bar.showMessage(f"Цвет кисти изменен на {color_hex}")
 
+class SettingsDialog(QDialog):
+    def __init__(self, parent, canvas_widget: CanvasWidget):
+        super().__init__(parent)
+        self.canvas = canvas_widget
+        self.setWindowTitle("Настройки")
+
+        layout = QVBoxLayout(self)
+
+        # Сетка
+        self.grid_check = QCheckBox("Показывать сетку")
+        self.grid_check.setChecked(self.canvas.show_grid)
+        layout.addWidget(self.grid_check)
+
+        # Размер сетки
+        layout.addWidget(QLabel("Размер сетки:"))
+        self.grid_slider = QSlider(Qt.Horizontal)
+        self.grid_slider.setRange(40, 160)
+        self.grid_slider.setValue(self.canvas._grid_step)
+        layout.addWidget(self.grid_slider)
+
+        # Кнопки OK / Cancel
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self.apply_settings)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def apply_settings(self):
+        # включить/выключить сетку
+        self.canvas.show_grid = self.grid_check.isChecked()
+
+        # изменить шаг сетки
+        self.canvas._grid_step = self.grid_slider.value()
+
+        # принудительное обновление
+        self.canvas._grid_pixmap = None
+        self.canvas.update()
+
+        self.accept()
 
 def main():
     app = QApplication(sys.argv)
