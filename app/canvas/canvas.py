@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
+import os
 
 
 @dataclass
@@ -20,6 +21,7 @@ class CanvasModel:
         self.width = width
         self.height = height
         self.background_color = QColor(255, 255, 255)
+        self.background_image: Optional[QImage] = None
         
         # История штрихов для undo/redo
         self.strokes: List[Stroke] = []
@@ -46,15 +48,12 @@ class CanvasModel:
             tool=self.current_tool
         )
         self.current_stroke.points.append(pos)
-        
-        # Очищаем redo stack при новом действии
         self.redo_stack.clear()
     
     def continue_stroke(self, pos: QPointF):
         """Продолжение текущего штриха"""
         if self.current_stroke:
             self.current_stroke.points.append(pos)
-            # Обновляем изображение в реальном времени
             self._draw_current_stroke()
     
     def end_stroke(self):
@@ -85,6 +84,45 @@ class CanvasModel:
         self.redo_stack.clear()
         self.current_stroke = None
         self._image.fill(self.background_color)
+        if self.background_image:
+            self._draw_background()
+    
+    def load_background(self, image_path: str) -> bool:
+        """Загрузка фонового изображения"""
+        try:
+            background = QImage(image_path)
+            if background.isNull():
+                return False
+            
+            # Масштабируем изображение под размер холста
+            self.background_image = background.scaled(
+                self.width, self.height, 
+                aspectRatioMode=1,  # KeepAspectRatio
+                transformMode=1     # SmoothTransformation
+            )
+            self._draw_background()
+            return True
+        except:
+            return False
+    
+    def set_background_color(self, color: QColor):
+        """Установка цвета фона"""
+        self.background_color = color
+        self.background_image = None
+        self._rebuild_image()
+    
+    def _draw_background(self):
+        """Отрисовка фона"""
+        if self.background_image:
+            self._image.fill(Qt.transparent)
+            painter = QPainter(self._image)
+            painter.drawImage(0, 0, self.background_image)
+            painter.end()
+        else:
+            self._image.fill(self.background_color)
+        
+        # Перерисовываем все штрихи поверх фона
+        self._rebuild_image()
     
     def set_color(self, color: QColor):
         """Установка текущего цвета"""
@@ -111,11 +149,20 @@ class CanvasModel:
         painter.end()
         
         self._image = new_image
+        
+        # Масштабируем фоновое изображение если есть
+        if self.background_image:
+            self.background_image = self.background_image.scaled(
+                width, height, 
+                aspectRatioMode=1,
+                transformMode=1
+            )
+        
         self._rebuild_image()
     
     def _rebuild_image(self):
         """Перерисовка изображения на основе истории штрихов"""
-        self._image.fill(self.background_color)
+        self._draw_background()
         
         painter = QPainter(self._image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -147,7 +194,6 @@ class CanvasModel:
         
         painter.setPen(pen)
         
-        # Рисуем полилинию через все точки
         for i in range(len(stroke.points) - 1):
             painter.drawLine(stroke.points[i], stroke.points[i + 1])
     
@@ -167,11 +213,9 @@ class RenderEngine:
         """Отрисовка холста на QPainter"""
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        # Отрисовываем основное изображение холста
         source_rect = QRectF(0, 0, self.canvas_model.width, self.canvas_model.height)
         painter.drawImage(target_rect, self.canvas_model.image, source_rect)
         
-        # Отрисовываем текущий активный штрих поверх
         if self.canvas_model.current_stroke:
             self._draw_current_stroke(painter)
     
@@ -188,6 +232,51 @@ class RenderEngine:
         
         painter.setPen(pen)
         
-        # Рисуем полилинию
         for i in range(len(stroke.points) - 1):
             painter.drawLine(stroke.points[i], stroke.points[i + 1])
+    
+    def export_to_png(self, filename: str) -> bool:
+        """Экспорт холста в PNG"""
+        try:
+            return self.canvas_model.image.save(filename, "PNG")
+        except:
+            return False
+    
+    def export_to_svg(self, filename: str) -> bool:
+        """Экспорт холста в SVG"""
+        try:
+            from PySide6.QtSvg import QSvgGenerator
+            from PySide6.QtCore import QRect
+            
+            generator = QSvgGenerator()
+            generator.setFileName(filename)
+            generator.setSize(self.canvas_model.image.size())
+            generator.setViewBox(QRect(0, 0, self.canvas_model.width, self.canvas_model.height))
+            generator.setTitle("Intelligent Canvas Export")
+            generator.setDescription("Exported from Intelligent Canvas Application")
+            
+            painter = QPainter(generator)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            # Рисуем фон
+            if self.canvas_model.background_image:
+                painter.drawImage(0, 0, self.canvas_model.background_image)
+            else:
+                painter.fillRect(0, 0, self.canvas_model.width, self.canvas_model.height, 
+                               self.canvas_model.background_color)
+            
+            # Рисуем все штрихи
+            for stroke in self.canvas_model.undo_stack:
+                pen = QPen(stroke.color)
+                pen.setWidthF(stroke.thickness)
+                pen.setCapStyle(QPen.CapStyle.RoundCap)
+                pen.setJoinStyle(QPen.JoinStyle.RoundJoin)
+                painter.setPen(pen)
+                
+                for i in range(len(stroke.points) - 1):
+                    painter.drawLine(stroke.points[i], stroke.points[i + 1])
+            
+            painter.end()
+            return True
+        except:
+            return False
