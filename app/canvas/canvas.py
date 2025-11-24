@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
-from PySide6.QtCore import QPointF, QRectF
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QTransform
 import os
 
 
@@ -94,7 +94,6 @@ class CanvasModel:
             if background.isNull():
                 return False
             
-            # Масштабируем изображение под размер холста
             self.background_image = background.scaled(
                 self.width, self.height, 
                 aspectRatioMode=1,  # KeepAspectRatio
@@ -116,12 +115,12 @@ class CanvasModel:
         if self.background_image:
             self._image.fill(Qt.transparent)
             painter = QPainter(self._image)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             painter.drawImage(0, 0, self.background_image)
             painter.end()
         else:
             self._image.fill(self.background_color)
         
-        # Перерисовываем все штрихи поверх фона
         self._rebuild_image()
     
     def set_color(self, color: QColor):
@@ -150,7 +149,6 @@ class CanvasModel:
         
         self._image = new_image
         
-        # Масштабируем фоновое изображение если есть
         if self.background_image:
             self.background_image = self.background_image.scaled(
                 width, height, 
@@ -166,6 +164,7 @@ class CanvasModel:
         
         painter = QPainter(self._image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         
         for stroke in self.undo_stack:
             self._draw_stroke(painter, stroke)
@@ -179,6 +178,7 @@ class CanvasModel:
             
         painter = QPainter(self._image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self._draw_stroke(painter, self.current_stroke)
         painter.end()
     
@@ -204,20 +204,61 @@ class CanvasModel:
 
 
 class RenderEngine:
-    """Движок для отрисовки холста"""
+    """Движок для отрисовки холста с поддержкой масштабирования и перемещения"""
     
     def __init__(self, canvas_model: CanvasModel):
         self.canvas_model = canvas_model
+        self.scale_factor = 1.0
+        self.offset = QPointF(0, 0)
+        self._cached_image: Optional[QImage] = None
+        self._cache_dirty = True
     
     def render_to_painter(self, painter: QPainter, target_rect: QRectF):
-        """Отрисовка холста на QPainter"""
+        """Отрисовка холста на QPainter с поддержкой трансформаций"""
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         
+        # Применяем трансформации (масштаб и смещение)
+        painter.save()
+        painter.translate(self.offset)
+        painter.scale(self.scale_factor, self.scale_factor)
+        
+        # Используем кэшированное изображение для плавности
+        if self._cache_dirty or self._cached_image is None:
+            self._update_cache()
+        
+        # Отрисовываем кэшированное изображение
         source_rect = QRectF(0, 0, self.canvas_model.width, self.canvas_model.height)
-        painter.drawImage(target_rect, self.canvas_model.image, source_rect)
+        painter.drawImage(target_rect, self._cached_image, source_rect)
         
+        # Отрисовываем текущий активный штрих поверх
         if self.canvas_model.current_stroke:
             self._draw_current_stroke(painter)
+        
+        painter.restore()
+    
+    def _update_cache(self):
+        """Обновление кэшированного изображения для плавного рендеринга"""
+        self._cached_image = QImage(
+            self.canvas_model.width, 
+            self.canvas_model.height, 
+            QImage.Format.Format_ARGB32
+        )
+        self._cached_image.fill(Qt.transparent)
+        
+        cache_painter = QPainter(self._cached_image)
+        cache_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cache_painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        
+        # Рисуем основное изображение холста
+        cache_painter.drawImage(0, 0, self.canvas_model.image)
+        cache_painter.end()
+        
+        self._cache_dirty = False
+    
+    def invalidate_cache(self):
+        """Пометить кэш как устаревший"""
+        self._cache_dirty = True
     
     def _draw_current_stroke(self, painter: QPainter):
         """Отрисовка текущего активного штриха"""
@@ -226,7 +267,7 @@ class RenderEngine:
             return
         
         pen = QPen(stroke.color)
-        pen.setWidthF(stroke.thickness)
+        pen.setWidthF(stroke.thickness / self.scale_factor)  # Компенсируем масштаб для толщины
         pen.setCapStyle(QPen.CapStyle.RoundCap)
         pen.setJoinStyle(QPen.JoinStyle.RoundJoin)
         
@@ -234,6 +275,56 @@ class RenderEngine:
         
         for i in range(len(stroke.points) - 1):
             painter.drawLine(stroke.points[i], stroke.points[i + 1])
+    
+    def set_scale(self, scale: float, center: QPointF = None):
+        """Установка масштаба относительно центра"""
+        old_scale = self.scale_factor
+        self.scale_factor = max(0.1, min(5.0, scale))  # Ограничиваем масштаб
+        
+        # Корректируем смещение для масштабирования относительно центра
+        if center and old_scale != 0:
+            scale_ratio = self.scale_factor / old_scale
+            self.offset = center + (self.offset - center) * scale_ratio
+        
+        self.invalidate_cache()
+    
+    def zoom_in(self, center: QPointF = None):
+        """Увеличение масштаба"""
+        self.set_scale(self.scale_factor * 1.2, center)
+    
+    def zoom_out(self, center: QPointF = None):
+        """Уменьшение масштаба"""
+        self.set_scale(self.scale_factor / 1.2, center)
+    
+    def reset_view(self):
+        """Сброс вида к исходному состоянию"""
+        self.scale_factor = 1.0
+        self.offset = QPointF(0, 0)
+        self.invalidate_cache()
+    
+    def pan(self, delta: QPointF):
+        """Перемещение холста"""
+        self.offset += delta
+        self.invalidate_cache()
+    
+    def screen_to_canvas(self, screen_pos: QPointF) -> QPointF:
+        """Преобразование экранных координат в координаты холста"""
+        if self.scale_factor == 0:
+            return screen_pos
+        
+        return (screen_pos - self.offset) / self.scale_factor
+    
+    def canvas_to_screen(self, canvas_pos: QPointF) -> QPointF:
+        """Преобразование координат холста в экранные координаты"""
+        return canvas_pos * self.scale_factor + self.offset
+    
+    def get_visible_rect(self) -> QRectF:
+        """Получение видимой области холста в координатах холста"""
+        if self.scale_factor == 0:
+            return QRectF()
+        
+        # Это нужно вычислять на основе размера виджета
+        return QRectF(0, 0, self.canvas_model.width, self.canvas_model.height)
     
     def export_to_png(self, filename: str) -> bool:
         """Экспорт холста в PNG"""
@@ -258,14 +349,12 @@ class RenderEngine:
             painter = QPainter(generator)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             
-            # Рисуем фон
             if self.canvas_model.background_image:
                 painter.drawImage(0, 0, self.canvas_model.background_image)
             else:
                 painter.fillRect(0, 0, self.canvas_model.width, self.canvas_model.height, 
                                self.canvas_model.background_color)
             
-            # Рисуем все штрихи
             for stroke in self.canvas_model.undo_stack:
                 pen = QPen(stroke.color)
                 pen.setWidthF(stroke.thickness)
