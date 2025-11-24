@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QFileDialog, QDialog, QCheckBox, QComboBox, QSlider, QDialogButtonBox
 )
 
+from app.vision.camera_service import CameraService
+
 # --- Stub Classes for Future Integration ---
 class CanvasModel:
     """Заглушка модели холста. В будущем будет хранить данные о рисунке."""
@@ -224,9 +226,13 @@ class MainWindow(QMainWindow):
         self._color_swatches: list[ColorSwatchButton] = []
         self._brush_size_buttons: list[BrushSizeButton] = []
 
+        self._camera = CameraService()
+        self._vision_timer = QTimer(self)
+        self._vision_timer.timeout.connect(self._update_from_camera)
+        self._vision_timer.start(16)  # ~60 FPS
+
         self._init_ui()
         self._setup_timers()
-        self._setup_shortcuts()
 
     def _save_canvas(self):
         """Сохраняет видимое содержимое холста как PNG."""
@@ -355,9 +361,7 @@ class MainWindow(QMainWindow):
 
         tools = [
             ("Brush", "🖌", "Кисть (B)"),
-            ("Eraser", "🧽", "Ластик (E)"),
-            ("Fill", "🪣", "Заливка (F)"),
-            ("Picker", "💧", "Пипетка (P)")
+            ("Eraser", "🧽", "Ластик (E)")
         ]
         for tool_id, icon, tooltip in tools:
             btn = ToolButton(tooltip, icon, size=56)
@@ -404,6 +408,12 @@ class MainWindow(QMainWindow):
 
         parent_layout.addWidget(control_container)
 
+    def _open_mini_tool_overlay(self, x, y):
+        if not hasattr(self, "_mini_overlay"):
+            self._mini_overlay = MiniToolOverlay(self)
+
+        self._mini_overlay.show_at(x, y)
+
     def _create_bottom_status_bar(self, parent_layout: QVBoxLayout) -> None:
         """Создает нижнюю информационную панель."""
         info_frame = QFrame()
@@ -433,8 +443,32 @@ class MainWindow(QMainWindow):
 
         parent_layout.addWidget(info_frame)
 
+        self.gesture_hint_widget = GestureHintWidget()
+        info_layout.addWidget(self.gesture_hint_widget)
+
         # отметить текущий размер кисти
         self._update_brush_size_buttons()
+
+    def _update_from_camera(self):
+        frame = self._camera.get_frame_data()
+        if frame is None:
+            return
+
+        # Обновляем подсказку жестов
+        self.gesture_hint_widget.update_hint(frame.gesture)
+
+        # Обновляем подсветку в UI
+        if frame.gesture == "drawing":
+            self._set_active_tool("Brush")
+        elif frame.gesture == "erasing":
+            self._set_active_tool("Eraser")
+        elif frame.gesture == "scale":
+            pass  # масштабирование будет на 5 неделе
+        elif frame.gesture == "menu":
+            self._open_mini_tool_overlay(frame.index_finger_x, frame.index_finger_y)
+
+        if frame.gesture != "menu" and hasattr(self, "_mini_overlay"):
+            self._mini_overlay.hide()
 
     def _create_fps_widget(self) -> QFrame:
         """Создает виджет для отображения FPS."""
@@ -472,13 +506,6 @@ class MainWindow(QMainWindow):
         self._fps_timer.timeout.connect(self._update_fps_display)
         self._fps_timer.start(500)
 
-    def _setup_shortcuts(self) -> None:
-        """Клавиатурные сокращения для быстрого переключения инструментов."""
-        QShortcut(QKeySequence("B"), self, activated=lambda: self._set_active_tool("Brush"))
-        QShortcut(QKeySequence("E"), self, activated=lambda: self._set_active_tool("Eraser"))
-        QShortcut(QKeySequence("F"), self, activated=lambda: self._set_active_tool("Fill"))
-        QShortcut(QKeySequence("P"), self, activated=lambda: self._set_active_tool("Picker"))
-
     def _update_fps_display(self) -> None:
         """Обновляет значение FPS в UI."""
         current_fps = self._hand_tracker.get_fps()
@@ -490,12 +517,6 @@ class MainWindow(QMainWindow):
         clicked_button = self.sender()
         tool_id = clicked_button.property('tool_id')
         self._set_active_tool(tool_id)
-
-        if tool_id == "Fill":
-            # При выборе заливки показываем подсказку
-            self.status_bar.showMessage("Режим заливки фона: кликните на цвет в палитре")
-        else:
-            self.status_bar.showMessage(f"Активный инструмент: {tool_id}")
 
     def _set_active_tool(self, tool_id: str) -> None:
         """Устанавливает активный инструмент и обновляет UI-индикатор."""
@@ -545,22 +566,15 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Диалог настройки пользовательских цветов (в разработке)")
 
     def _on_color_swatch_clicked(self, color_hex: str, btn: ColorSwatchButton) -> None:
-        """Обрабатывает клик на образце цвета. Если выбран Fill - заливаем холст, иначе - выбираем цвет кисти."""
-        if self._current_tool == "Fill":
-            # Если выбран инструмент "Заливка" - заливаем фон
-            self.canvas_widget.fill_with_color(color_hex)
-            self.status_bar.showMessage(f"Фон холста изменен на {color_hex}")
-            # после применения заливки возвращаемся к кисти (более предсказуемое поведение)
-            self._set_active_tool("Brush")
-        else:
-            # Иначе выбираем цвет для кисти
-            self._current_color = color_hex
-            # обновляем индикаторы цвета
-            self._current_color_indicator._color_hex = color_hex
-            self._current_color_indicator._init_style()
-            for s in self._color_swatches:
-                s.set_selected(s is btn)
-            self.status_bar.showMessage(f"Цвет кисти изменен на {color_hex}")
+        """Обрабатывает клик на образце цвета."""
+        # Иначе выбираем цвет для кисти
+        self._current_color = color_hex
+        # обновляем индикаторы цвета
+        self._current_color_indicator._color_hex = color_hex
+        self._current_color_indicator._init_style()
+        for s in self._color_swatches:
+            s.set_selected(s is btn)
+        self.status_bar.showMessage(f"Цвет кисти изменен на {color_hex}")
 
 class SettingsDialog(QDialog):
     def __init__(self, parent, canvas_widget: CanvasWidget):
@@ -600,6 +614,66 @@ class SettingsDialog(QDialog):
         self.canvas.update()
 
         self.accept()
+
+class GestureHintWidget(QLabel):
+    """Плавающая подсказка жестов внизу."""
+    def __init__(self):
+        super().__init__()
+        self.setText("Жесты не обнаружены")
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet("""
+            QLabel {
+                background: #2C3E50;
+                color: #ECF0F1;
+                padding: 10px 20px;
+                border-radius: 10px;
+                font-size: 14px;
+                font-weight: 600;
+            }
+        """)
+        self.setFixedHeight(40)
+
+    def update_hint(self, gesture: str):
+        mapping = {
+            "idle": "✋ Двигайте рукой — жесты не обнаружены",
+            "drawing": "🤏 Pinch — рисование",
+            "erasing": "✋ Открытая ладонь — ластик",
+            "scale": "🤌 Двуручный pinch — масштабирование",
+            "menu": "✊ Кулак — открыть меню",
+        }
+        self.setText(mapping.get(gesture, "Неизвестный жест"))
+
+class MiniToolOverlay(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.ToolTip)
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(8, 8, 8, 8)
+        self.layout.setSpacing(8)
+        self.setStyleSheet("""
+            QWidget {
+                background: #FFFFFF;
+                border: 2px solid #5A7FFF;
+                border-radius: 12px;
+            }
+        """)
+
+        # инструменты
+        btn1 = QPushButton("🖌")
+        btn2 = QPushButton("🧽")
+        btn3 = QPushButton("🎨")
+
+        for b in (btn1, btn2, btn3):
+            b.setFixedSize(48, 48)
+            self.layout.addWidget(b)
+
+        btn1.clicked.connect(lambda: parent._set_active_tool("Brush"))
+        btn2.clicked.connect(lambda: parent._set_active_tool("Eraser"))
+        btn3.clicked.connect(lambda: parent._on_custom_colors_clicked())
+
+    def show_at(self, x, y):
+        self.move(x, y)
+        self.show()
 
 def main():
     app = QApplication(sys.argv)
