@@ -5,46 +5,39 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen
 
 @dataclass
 class Stroke:
-    """Векторное представление штриха"""
     points: List[QPointF] = field(default_factory=list)
     color: QColor = field(default_factory=lambda: QColor(0, 0, 0))
     thickness: float = 3.0
     tool: str = "brush"
 
 class CanvasModel:
-    """Модель данных"""
     def __init__(self, width: int = 1920, height: int = 1080):
         self.width = width
         self.height = height
         
-        # Слои фона
         self.background_color: Optional[QColor] = None 
         self.background_image: Optional[QImage] = None
-        self.camera_frame: Optional[QImage] = None # <-- Новый слот для кадра
+        self.camera_frame: Optional[QImage] = None
         
-        # Настройки сетки
         self.grid_step = 80
         self.show_grid = True
 
-        # История штрихов
         self.strokes: List[Stroke] = []
         self.undo_stack: List[Stroke] = []
         self.redo_stack: List[Stroke] = []
         self.current_stroke: Optional[Stroke] = None
 
-        # Инструменты
+        # Настройки
         self.current_color = QColor("#3498DB")
         self.current_tool = "brush"
         self.brush_thickness = 12.0
-        self.eraser_thickness = 60.0
+        self.eraser_thickness = 80.0  # Ластик еще больше
         self.current_thickness = self.brush_thickness
 
-        # Буфер рисования (только штрихи)
         self._image = QImage(width, height, QImage.Format.Format_ARGB32)
         self._image.fill(Qt.transparent)
 
     def set_camera_frame(self, image: QImage):
-        """Обновление текущего кадра с камеры"""
         self.camera_frame = image
 
     def set_tool(self, tool: str):
@@ -150,7 +143,6 @@ class CanvasModel:
 
 
 class RenderEngine:
-    """Движок отображения"""
     def __init__(self, model: CanvasModel):
         self.model = model
         self.scale_factor = 1.0
@@ -159,40 +151,32 @@ class RenderEngine:
     def render_to_painter(self, painter: QPainter, target_rect: QRectF):
         painter.save()
         
-        # 1. Заливка базовым цветом (чтобы PNG прозрачность фона работала корректно)
+        # 1. Заливка (фон окна)
         bg_color = self.model.background_color or QColor("#F3F5F7")
         painter.fillRect(target_rect, bg_color)
         
-        # 2. Трансформация камеры (Зум/Пан)
+        # 2. Трансформации
         painter.translate(self.offset)
         painter.scale(self.scale_factor, self.scale_factor)
         
-        # 3. ОТРИСОВКА КАМЕРЫ (Полупрозрачно)
+        # 3. Камера (ПОЛУПРОЗРАЧНАЯ)
         if self.model.camera_frame:
             painter.save()
-            painter.setOpacity(0.4)  # 40% непрозрачности (полупрозрачная)
-            # Растягиваем камеру на весь текущий размер холста (или вписываем)
-            # Сейчас предполагаем, что холст равен размеру камеры
+            painter.setOpacity(0.6)  # Увеличил с 0.4 до 0.6 для лучшей видимости
             painter.drawImage(QRectF(0, 0, self.model.width, self.model.height), self.model.camera_frame)
             painter.restore()
 
-        # 4. Статичная картинка-фон (если загружена через Open)
         if self.model.background_image:
             painter.drawImage(0, 0, self.model.background_image)
 
-        # 5. Сетка (Если мы хотим чтобы она была ПОД штрихами, но НАД камерой)
-        # В ui.py сетка рисуется поверх всего, но можно перенести сюда, если нужно
-        
-        # 6. Основной буфер штрихов
+        # 4. Штрихи
         painter.drawImage(0, 0, self.model.image)
         
         painter.restore()
 
     def save_to_file(self, path: str) -> bool:
-        # При сохранении камеру обычно не сохраняют, только рисунок
         result = QImage(self.model.width, self.model.height, QImage.Format_ARGB32)
-        result.fill(Qt.white) # Белый фон для сохранения
-        
+        result.fill(Qt.white)
         painter = QPainter(result)
         if self.model.background_image:
             painter.drawImage(0, 0, self.model.background_image)

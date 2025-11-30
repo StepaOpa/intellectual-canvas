@@ -1,6 +1,6 @@
 from typing import Optional, Dict, List
-from PySide6.QtCore import Qt, QSize, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QPixmap, QPaintEvent, QMouseEvent, QIcon
+from PySide6.QtCore import Qt, QPointF
+from PySide6.QtGui import QPainter, QColor, QPen, QPixmap, QPaintEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFrame, QSizePolicy, QStatusBar,
@@ -9,24 +9,22 @@ from PySide6.QtWidgets import (
 
 from app.canvas.canvas import CanvasModel, RenderEngine
 
-# --- Custom Widgets ---
-
 class CanvasWidget(QWidget):
     def __init__(self, model: CanvasModel, engine: RenderEngine, parent=None):
         super().__init__(parent)
         self._model = model
         self._engine = engine
-        # self.setMouseTracking(True) # Можно отключить, если мышь вообще не нужна для координат
+        # self.setMouseTracking(True) # Отключено
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     def paintEvent(self, event: QPaintEvent):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        # 1. Рендерим фон + камеру + рисунок
+        # 1. Рендерим камеру и рисунок
         self._engine.render_to_painter(painter, self.rect())
         
-        # 2. Сетка рисуется ПОВЕРХ всего (включая камеру)
+        # 2. Сетка ПОВЕРХ камеры
         if self._model.show_grid:
             self._draw_grid(painter)
 
@@ -44,16 +42,14 @@ class CanvasWidget(QWidget):
         for y in range(0, h, int(step)):
             painter.drawLine(0, y, w, y)
 
-    # --- ОТКЛЮЧАЕМ РИСОВАНИЕ МЫШКОЙ ---
-    def mousePressEvent(self, event: QMouseEvent):
-        pass 
+    # Заглушки для отключения мыши
+    def mousePressEvent(self, event: QMouseEvent): pass 
+    def mouseMoveEvent(self, event: QMouseEvent): pass
+    def mouseReleaseEvent(self, event: QMouseEvent): pass
 
-    def mouseMoveEvent(self, event: QMouseEvent):
-        pass
 
-    def mouseReleaseEvent(self, event: QMouseEvent):
-        pass
-
+# ОСТАЛЬНЫЕ КЛАССЫ UI (ToolButton, MainWindow и т.д.) БЕЗ ИЗМЕНЕНИЙ
+# (Скопируйте их из предыдущих версий, они работают корректно)
 
 class ToolButton(QPushButton):
     def __init__(self, tooltip: str, icon_text: str, parent=None, size: int = 56):
@@ -76,7 +72,6 @@ class ToolButton(QPushButton):
             QPushButton {{ {active_style if self._is_active else inactive_style}
                 border-radius: {self._size // 2}px; font-size: 20px; font-weight: bold; }}
             QPushButton:hover {{ background-color: #F0F4FF; border: 2px solid #5A7FFF; }}
-            QPushButton:pressed {{ background-color: #E0EAFF; }}
         """)
 
 class ColorSwatchButton(ToolButton):
@@ -138,12 +133,10 @@ class SettingsDialog(QDialog):
         
         layout = QVBoxLayout(self)
         
-        # Checkbox Grid
         self.grid_check = QCheckBox("Показывать сетку")
         self.grid_check.setChecked(model.show_grid)
         layout.addWidget(self.grid_check)
         
-        # Slider Size
         layout.addWidget(QLabel("Размер сетки:"))
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(20, 200)
@@ -159,8 +152,6 @@ class SettingsDialog(QDialog):
         self.model.show_grid = self.grid_check.isChecked()
         self.model.grid_step = self.slider.value()
         super().accept()
-
-# --- Main Window ---
 
 class MainWindow(QMainWindow):
     def __init__(self, model: CanvasModel, engine: RenderEngine):
@@ -186,10 +177,8 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(12)
 
-        # 1. Top Palette
         self._create_top_palette_bar(main_layout)
         
-        # 2. Workspace
         mid_layout = QHBoxLayout()
         mid_layout.setSpacing(12)
         self._create_left_toolbar(mid_layout)
@@ -200,7 +189,6 @@ class MainWindow(QMainWindow):
         self._create_right_control_panel(mid_layout)
         main_layout.addLayout(mid_layout, stretch=1)
         
-        # 3. Bottom Bar
         self._create_bottom_bar(main_layout)
 
     def _create_top_palette_bar(self, layout):
@@ -214,7 +202,6 @@ class MainWindow(QMainWindow):
         self._active_mode_label.setStyleSheet("color: #ECF0F1; font-weight: 700; font-size: 16px;")
         l.addWidget(self._active_mode_label)
         
-        # Swatches
         swatch_container = QWidget()
         sl = QHBoxLayout(swatch_container)
         colors = ["#FF4757", "#FF7A3D", "#FFC312", "#2ECC71", "#3498DB", "#9B59B6", "#E91E63", "#2C3E50", "#FFFFFF"]
@@ -292,11 +279,8 @@ class MainWindow(QMainWindow):
         
         layout.addWidget(frame)
         
-        # Status Bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-
-    # --- Actions ---
     
     def _on_save(self):
         path, _ = QFileDialog.getSaveFileName(self, "Сохранить изображение", "", "PNG Files (*.png)")
@@ -320,7 +304,7 @@ class MainWindow(QMainWindow):
 
     def set_color(self, hex_color, btn_obj):
         self._model.set_color(QColor(hex_color))
-        self._model.current_color = QColor(hex_color) # Explicit update
+        self._model.current_color = QColor(hex_color) 
         for b in self._color_swatches:
             b.set_selected(b is btn_obj)
         self.status_bar.showMessage(f"Цвет: {hex_color}")
@@ -339,7 +323,6 @@ class MainWindow(QMainWindow):
             b.repaint()
 
     def update_ui_state(self):
-        # Default state init
         self.set_tool("Brush")
         self.set_brush_size(12)
         if self._color_swatches:
