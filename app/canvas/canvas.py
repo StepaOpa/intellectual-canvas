@@ -50,19 +50,29 @@ class CanvasModel:
 
     def set_color(self, color: QColor):
         self.current_color = color
-        # Если мы прямо сейчас рисуем, можно было бы менять и цвет, 
-        # но обычно в граф. редакторах цвет штриха не меняется на лету.
+        
+        # --- ЛОГИКА СМЕНЫ ЦВЕТА НА ЛЕТУ ---
+        # Если мы прямо сейчас рисуем штрих, нужно его "разрезать".
+        # Старая часть останется старого цвета, новая пойдет с новым.
+        if self.current_stroke and self.current_stroke.tool == "brush":
+            # 1. Запоминаем последнюю точку (где мы сейчас находимся)
+            if self.current_stroke.points:
+                last_pos = self.current_stroke.points[-1]
+                
+                # 2. Завершаем текущий штрих (он сохраняется в историю)
+                self.end_stroke()
+                
+                # 3. Начинаем новый штрих с той же точки (begin_stroke возьмет уже self.current_color)
+                self.begin_stroke(last_pos)
 
-    # --- ЛОГИКА МГНОВЕННОГО ПРИМЕНЕНИЯ РАЗМЕРА ---
     def set_brush_size(self, size: float):
         self.brush_size = float(size)
-        # Если прямо сейчас рисуем КИСТЬЮ, обновляем толщину текущего штриха
+        # Размер применяем мгновенно к текущему штриху
         if self.current_stroke and self.current_stroke.tool == "brush":
             self.current_stroke.thickness = self.brush_size
 
     def set_eraser_size(self, size: float):
         self.eraser_size = float(size)
-        # Если прямо сейчас стираем, обновляем толщину
         if self.current_stroke and self.current_stroke.tool == "eraser":
             self.current_stroke.thickness = self.eraser_size
 
@@ -90,7 +100,6 @@ class CanvasModel:
             if len(self.current_stroke.points) >= 2:
                 p1 = self.current_stroke.points[-2]
                 p2 = self.current_stroke.points[-1]
-                # Передаем stroke целиком, там уже обновленная толщина
                 self._draw_segment_to_buffer(p1, p2, self.current_stroke)
 
     def end_stroke(self):
@@ -146,7 +155,7 @@ class CanvasModel:
             painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         
         pen = QPen(stroke.color)
-        pen.setWidthF(stroke.thickness) # Тут используется актуальная толщина
+        pen.setWidthF(stroke.thickness)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
