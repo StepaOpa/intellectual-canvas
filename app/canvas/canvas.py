@@ -27,13 +27,17 @@ class CanvasModel:
         self.redo_stack: List[Stroke] = []
         self.current_stroke: Optional[Stroke] = None
 
-        # Настройки
+        # Настройки по умолчанию
         self.current_color = QColor("#3498DB")
         self.current_tool = "brush"
-        self.brush_thickness = 12.0
-        self.eraser_thickness = 80.0  # Ластик еще больше
-        self.current_thickness = self.brush_thickness
+        
+        # Храним настройки для каждого инструмента отдельно
+        self.settings = {
+            "brush": {"size": 12.0},
+            "eraser": {"size": 60.0}
+        }
 
+        # Буфер отрисовки
         self._image = QImage(width, height, QImage.Format.Format_ARGB32)
         self._image.fill(Qt.transparent)
 
@@ -42,20 +46,18 @@ class CanvasModel:
 
     def set_tool(self, tool: str):
         self.current_tool = tool
-        if tool == "brush":
-            self.current_thickness = self.brush_thickness
-        elif tool == "eraser":
-            self.current_thickness = self.eraser_thickness
+        # При смене инструмента размер автоматически берется из памяти settings
 
     def set_color(self, color: QColor):
         self.current_color = color
 
     def set_thickness(self, thickness: float):
-        self.current_thickness = float(thickness)
-        if self.current_tool == "brush":
-            self.brush_thickness = self.current_thickness
-        elif self.current_tool == "eraser":
-            self.eraser_thickness = self.current_thickness
+        # Сохраняем размер для текущего активного инструмента
+        self.settings[self.current_tool]["size"] = float(thickness)
+
+    @property
+    def current_thickness(self) -> float:
+        return self.settings[self.current_tool]["size"]
 
     def begin_stroke(self, pos: QPointF):
         self.current_stroke = Stroke(
@@ -65,14 +67,19 @@ class CanvasModel:
         )
         self.current_stroke.points.append(pos)
         self.redo_stack.clear()
+        self._draw_point_to_buffer(pos)
 
     def continue_stroke(self, pos: QPointF):
         if self.current_stroke:
             self.current_stroke.points.append(pos)
-            self._draw_current_stroke_to_buffer()
+            # Оптимизация: рисуем только последний сегмент
+            if len(self.current_stroke.points) >= 2:
+                p1 = self.current_stroke.points[-2]
+                p2 = self.current_stroke.points[-1]
+                self._draw_segment_to_buffer(p1, p2, self.current_stroke)
 
     def end_stroke(self):
-        if self.current_stroke and len(self.current_stroke.points) > 1:
+        if self.current_stroke and len(self.current_stroke.points) > 0:
             self.strokes.append(self.current_stroke)
             self.undo_stack.append(self.current_stroke)
         self.current_stroke = None
@@ -102,26 +109,24 @@ class CanvasModel:
             self.background_image = img.scaled(self.width, self.height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self._rebuild_image()
 
-    def _draw_current_stroke_to_buffer(self):
-        if not self.current_stroke or len(self.current_stroke.points) < 2: return
+    def _draw_point_to_buffer(self, point: QPointF):
         painter = QPainter(self._image)
         self._configure_painter(painter)
-        self._draw_stroke_on_painter(painter, self.current_stroke)
+        
+        if self.current_tool == "eraser":
+            painter.setCompositionMode(QPainter.CompositionMode_Clear)
+        else:
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(self.current_stroke.color)
+            r = self.current_stroke.thickness / 2
+            painter.drawEllipse(point, r, r)
         painter.end()
 
-    def _rebuild_image(self):
-        self._image.fill(Qt.transparent)
+    def _draw_segment_to_buffer(self, p1: QPointF, p2: QPointF, stroke: Stroke):
         painter = QPainter(self._image)
         self._configure_painter(painter)
-        for stroke in self.undo_stack:
-            self._draw_stroke_on_painter(painter, stroke)
-        painter.end()
-
-    def _configure_painter(self, painter: QPainter):
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-
-    def _draw_stroke_on_painter(self, painter: QPainter, stroke: Stroke):
+        
         if stroke.tool == "eraser":
             painter.setCompositionMode(QPainter.CompositionMode_Clear)
         else:
@@ -132,10 +137,37 @@ class CanvasModel:
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
-        
-        if len(stroke.points) > 1:
-            for i in range(len(stroke.points) - 1):
-                painter.drawLine(stroke.points[i], stroke.points[i+1])
+        painter.drawLine(p1, p2)
+        painter.end()
+
+    def _rebuild_image(self):
+        self._image.fill(Qt.transparent)
+        painter = QPainter(self._image)
+        self._configure_painter(painter)
+        for stroke in self.undo_stack:
+            if stroke.tool == "eraser":
+                painter.setCompositionMode(QPainter.CompositionMode_Clear)
+            else:
+                painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            
+            pen = QPen(stroke.color)
+            pen.setWidthF(stroke.thickness)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            
+            if len(stroke.points) > 1:
+                painter.drawPolyline(stroke.points)
+            elif len(stroke.points) == 1:
+                 painter.setPen(Qt.NoPen)
+                 painter.setBrush(stroke.color)
+                 r = stroke.thickness / 2
+                 painter.drawEllipse(stroke.points[0], r, r)
+        painter.end()
+
+    def _configure_painter(self, painter: QPainter):
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
     @property
     def image(self) -> QImage:
@@ -155,21 +187,14 @@ class RenderEngine:
         bg_color = self.model.background_color or QColor("#F3F5F7")
         painter.fillRect(target_rect, bg_color)
         
-        # 2. Трансформации
-        painter.translate(self.offset)
-        painter.scale(self.scale_factor, self.scale_factor)
-        
-        # 3. Камера (ПОЛУПРОЗРАЧНАЯ)
+        # 2. Камера
         if self.model.camera_frame:
-            painter.save()
-            painter.setOpacity(0.6)  # Увеличил с 0.4 до 0.6 для лучшей видимости
             painter.drawImage(QRectF(0, 0, self.model.width, self.model.height), self.model.camera_frame)
-            painter.restore()
 
         if self.model.background_image:
             painter.drawImage(0, 0, self.model.background_image)
 
-        # 4. Штрихи
+        # 3. Штрихи
         painter.drawImage(0, 0, self.model.image)
         
         painter.restore()
@@ -183,6 +208,3 @@ class RenderEngine:
         painter.drawImage(0, 0, self.model.image)
         painter.end()
         return result.save(path)
-
-    def screen_to_canvas(self, screen_pos: QPointF) -> QPointF:
-        return (screen_pos - self.offset) / self.scale_factor

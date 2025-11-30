@@ -14,42 +14,31 @@ class CanvasWidget(QWidget):
         super().__init__(parent)
         self._model = model
         self._engine = engine
-        # self.setMouseTracking(True) # Отключено
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     def paintEvent(self, event: QPaintEvent):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        
-        # 1. Рендерим камеру и рисунок
         self._engine.render_to_painter(painter, self.rect())
-        
-        # 2. Сетка ПОВЕРХ камеры
         if self._model.show_grid:
             self._draw_grid(painter)
 
     def _draw_grid(self, painter: QPainter):
         step = self._model.grid_step * self._engine.scale_factor
         if step < 20: return 
-
         pen = QPen(QColor(0, 0, 0, 15))
         pen.setWidth(1)
         painter.setPen(pen)
-        
         w, h = self.width(), self.height()
         for x in range(0, w, int(step)):
             painter.drawLine(x, 0, x, h)
         for y in range(0, h, int(step)):
             painter.drawLine(0, y, w, y)
 
-    # Заглушки для отключения мыши
     def mousePressEvent(self, event: QMouseEvent): pass 
     def mouseMoveEvent(self, event: QMouseEvent): pass
     def mouseReleaseEvent(self, event: QMouseEvent): pass
 
-
-# ОСТАЛЬНЫЕ КЛАССЫ UI (ToolButton, MainWindow и т.д.) БЕЗ ИЗМЕНЕНИЙ
-# (Скопируйте их из предыдущих версий, они работают корректно)
 
 class ToolButton(QPushButton):
     def __init__(self, tooltip: str, icon_text: str, parent=None, size: int = 56):
@@ -92,37 +81,43 @@ class ColorSwatchButton(ToolButton):
         border = "3px solid #5A7FFF" if getattr(self, '_is_selected', False) else "2px solid #FFFFFF"
         self.setStyleSheet(f"QPushButton {{ background-color: {self._color_hex}; border: {border}; border-radius: {self._size // 2}px; }}")
 
-class BrushSizeButton(ToolButton):
-    def __init__(self, size_px: int, parent=None):
-        super().__init__(tooltip=f"Кисть: {size_px}px", icon_text="", parent=parent, size=70)
-        self.brush_size = size_px
+class SizeButton(ToolButton):
+    def __init__(self, label: str, value: int, parent=None):
+        """
+        label: Текст на кнопке (S, M, L)
+        value: Текущее значение в пикселях
+        """
+        super().__init__(tooltip=f"Размер: {value}px", icon_text=label, parent=parent, size=60)
+        self.value = value
+        self.setStyleSheet("font-size: 14px; font-weight: bold;")
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        radius = max(3.0, float(self.brush_size) / 2.0)
-        color = QColor(60, 60, 60) if not self._is_active else QColor(255, 255, 255)
-        painter.setBrush(color)
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(self.rect().center(), radius, radius)
+    def update_value(self, new_value: int):
+        self.value = new_value
+        self.setToolTip(f"Размер: {new_value}px")
+        # Перерисовка не нужна, текст (S/M/L) остается тем же
 
 class GestureHintWidget(QLabel):
     def __init__(self):
-        super().__init__("Жесты не обнаружены")
+        super().__init__("Ожидание руки...")
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("background: #2C3E50; color: #ECF0F1; padding: 10px 20px; border-radius: 10px; font-weight: 600;")
         self.setFixedHeight(40)
     
     def update_hint(self, gesture: str):
         mapping = {
-            "idle": "✋ Двигайте рукой — жесты не обнаружены",
-            "drawing": "🤏 Pinch — рисование",
-            "erasing": "✋ Открытая ладонь — ластик",
-            "scale": "🤌 Двуручный pinch — масштабирование",
-            "menu": "✊ Кулак — открыть меню",
+            "idle": "✋ Поднимите палец для рисования",
+            "drawing": "☝️ Рисование (Указательный палец)",
+            "erasing": "🖐 Ластик (Раскрытая ладонь)",
         }
-        self.setText(mapping.get(gesture, f"Жест: {gesture}"))
+        text = mapping.get(gesture, "👀 Поиск руки...")
+        self.setText(text)
+        
+        if gesture == "drawing":
+            self.setStyleSheet("background: #27AE60; color: white; padding: 10px 20px; border-radius: 10px; font-weight: bold;")
+        elif gesture == "erasing":
+            self.setStyleSheet("background: #E67E22; color: white; padding: 10px 20px; border-radius: 10px; font-weight: bold;")
+        else:
+            self.setStyleSheet("background: #2C3E50; color: #ECF0F1; padding: 10px 20px; border-radius: 10px;")
 
 class SettingsDialog(QDialog):
     def __init__(self, model: CanvasModel, parent=None):
@@ -130,19 +125,15 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Настройки холста")
         self.model = model
         self.resize(300, 200)
-        
         layout = QVBoxLayout(self)
-        
         self.grid_check = QCheckBox("Показывать сетку")
         self.grid_check.setChecked(model.show_grid)
         layout.addWidget(self.grid_check)
-        
         layout.addWidget(QLabel("Размер сетки:"))
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(20, 200)
         self.slider.setValue(model.grid_step)
         layout.addWidget(self.slider)
-        
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -161,13 +152,13 @@ class MainWindow(QMainWindow):
         
         self._tool_buttons: Dict[str, ToolButton] = {}
         self._color_swatches: List[ColorSwatchButton] = []
-        self._brush_size_buttons: List[BrushSizeButton] = []
+        self._size_buttons: List[SizeButton] = []
         
         self._init_ui()
         self.update_ui_state()
 
     def _init_ui(self):
-        self.setWindowTitle("Intelligent Canvas — Vision & Core Integration")
+        self.setWindowTitle("Intelligent Canvas")
         self.resize(1400, 900)
         self.setStyleSheet("QMainWindow { background-color: #E9EEF3; }")
 
@@ -211,7 +202,6 @@ class MainWindow(QMainWindow):
             sl.addWidget(btn)
             self._color_swatches.append(btn)
         l.addWidget(swatch_container, stretch=1)
-        
         layout.addWidget(frame)
 
     def _create_left_toolbar(self, layout):
@@ -222,7 +212,6 @@ class MainWindow(QMainWindow):
         
         for tool_id, icon, tip in [("Brush", "🖌", "Кисть"), ("Eraser", "🧽", "Ластик")]:
             btn = ToolButton(tip, icon, size=56)
-            btn.setProperty('tool_id', tool_id)
             btn.clicked.connect(lambda ch, t=tool_id: self.set_tool(t))
             l.addWidget(btn)
             self._tool_buttons[tool_id] = btn
@@ -243,17 +232,14 @@ class MainWindow(QMainWindow):
             ("Redo", "↷", lambda: (self._model.redo(), self.canvas_widget.update())),
             ("Clear", "🗑", lambda: (self._model.clear(), self.canvas_widget.update()))
         ]
-        
         for name, icon, func in actions:
             btn = ToolButton(name, icon, size=56)
             btn.clicked.connect(func)
             l.addWidget(btn)
-            
         l.addStretch()
         settings_btn = ToolButton("Настройки", "⚙", size=56)
         settings_btn.clicked.connect(self._on_settings)
         l.addWidget(settings_btn)
-        
         layout.addWidget(frame)
 
     def _create_bottom_bar(self, layout):
@@ -266,17 +252,17 @@ class MainWindow(QMainWindow):
         l.addWidget(self.gesture_hint)
         l.addStretch()
         
-        l.addWidget(QLabel("Размер кисти:"))
-        for size in (6, 12, 20, 36):
-            btn = BrushSizeButton(size)
-            btn.clicked.connect(lambda ch, s=size: self.set_brush_size(s))
-            l.addWidget(btn)
-            self._brush_size_buttons.append(btn)
-            
-        self.fps_label = QLabel("FPS: --")
-        self.fps_label.setStyleSheet("font-weight: bold; color: #27AE60;")
-        l.addWidget(self.fps_label)
+        l.addWidget(QLabel("Размер:"))
+        # Кнопки S, M, L, XL. Значения будут меняться динамически.
+        labels = ["S", "M", "L", "XL"]
+        default_vals = [4, 8, 16, 24]
         
+        for label, val in zip(labels, default_vals):
+            btn = SizeButton(label, val)
+            btn.clicked.connect(lambda ch, b=btn: self.set_size(b))
+            l.addWidget(btn)
+            self._size_buttons.append(btn)
+            
         layout.addWidget(frame)
         
         self.status_bar = QStatusBar()
@@ -285,17 +271,13 @@ class MainWindow(QMainWindow):
     def _on_save(self):
         path, _ = QFileDialog.getSaveFileName(self, "Сохранить изображение", "", "PNG Files (*.png)")
         if path:
-            if self._engine.save_to_file(path):
-                self.status_bar.showMessage(f"Сохранено: {path}")
-            else:
-                QMessageBox.warning(self, "Ошибка", "Не удалось сохранить файл")
+            self._engine.save_to_file(path)
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(self, "Открыть фон", "", "Images (*.png *.jpg)")
         if path:
             self._model.load_background(path)
             self.canvas_widget.update()
-            self.status_bar.showMessage(f"Фон загружен: {path}")
 
     def _on_settings(self):
         dlg = SettingsDialog(self._model, self)
@@ -304,32 +286,63 @@ class MainWindow(QMainWindow):
 
     def set_color(self, hex_color, btn_obj):
         self._model.set_color(QColor(hex_color))
-        self._model.current_color = QColor(hex_color) 
         for b in self._color_swatches:
             b.set_selected(b is btn_obj)
         self.status_bar.showMessage(f"Цвет: {hex_color}")
 
     def set_tool(self, tool_id):
+        # 1. Устанавливаем инструмент в модели
         self._model.set_tool(tool_id.lower())
+        
+        # 2. Обновляем UI кнопок инструментов
         self._active_mode_label.setText(f"{self._tool_buttons[tool_id].text()} {tool_id}")
         for t, b in self._tool_buttons.items():
             b.set_active(t == tool_id)
+            
+        # 3. Обновляем значения кнопок размеров под инструмент
+        self._update_size_buttons_for_tool(tool_id)
+        
         self.status_bar.showMessage(f"Инструмент: {tool_id}")
 
-    def set_brush_size(self, size):
-        self._model.set_thickness(size)
-        for b in self._brush_size_buttons:
-            b.set_active(b.brush_size == size)
-            b.repaint()
+    def _update_size_buttons_for_tool(self, tool_id):
+        # Определяем набор размеров
+        if tool_id == "Brush":
+            sizes = [4, 8, 16, 24]
+        else: # Eraser
+            sizes = [30, 60, 90, 120]
+            
+        current_size = self._model.current_thickness
+        
+        # Обновляем кнопки и ищем активную
+        closest_btn = None
+        min_diff = float('inf')
+        
+        for btn, size_val in zip(self._size_buttons, sizes):
+            btn.update_value(size_val)
+            
+            # Проверяем, совпадает ли с текущим
+            diff = abs(current_size - size_val)
+            if diff < min_diff:
+                min_diff = diff
+                closest_btn = btn
+        
+        # Подсвечиваем активный размер
+        for btn in self._size_buttons:
+            btn.set_active(btn is closest_btn)
+
+    def set_size(self, btn_obj: SizeButton):
+        self._model.set_thickness(btn_obj.value)
+        for b in self._size_buttons:
+            b.set_active(b is btn_obj)
 
     def update_ui_state(self):
         self.set_tool("Brush")
-        self.set_brush_size(12)
         if self._color_swatches:
             self.set_color(self._color_swatches[4].color_hex, self._color_swatches[4])
             
     def update_fps(self, fps: float):
-        self.fps_label.setText(f"FPS: {int(fps)}")
+        # Удалено по требованию
+        pass
 
     def update_gesture_hint(self, gesture: str):
         self.gesture_hint.update_hint(gesture)
