@@ -53,10 +53,7 @@ class AppCore:
 
         data = self.camera.get_frame_data()
         
-        # --- ФИЛЬТРАЦИЯ ОТКЛЮЧЕННЫХ ЖЕСТОВ (СРАЗУ) ---
-        # Если жест выключен кнопкой, мы принудительно сбрасываем его в IDLE.
-        # Это предотвращает отрисовку кружков и срабатывание логики.
-        
+        # --- ФИЛЬТРАЦИЯ ОТКЛЮЧЕННЫХ ЖЕСТОВ ---
         if data.gesture == "drawing" and not self.model.allow_drawing:
             data.gesture = "idle"
             data.cursor_x = -1
@@ -67,40 +64,41 @@ class AppCore:
             data.cursor_x = -1
             data.cursor_y = -1
         
-        # --- ОТРИСОВКА КАДРА И ИНДИКАТОРОВ ---
+        # --- РАСЧЕТ КООРДИНАТ ---
+        if data.cursor_x != -1:
+            # Зеркалим X, так как камера обычно отзеркалена для удобства
+            cv_draw_x = self.cam_width - data.cursor_x
+            cv_draw_y = data.cursor_y
+            
+            norm_x = cv_draw_x / self.cam_width
+            norm_y = cv_draw_y / self.cam_height
+            
+            model_x = norm_x * self.model.width
+            model_y = norm_y * self.model.height
+            canvas_pos = QPointF(model_x, model_y)
+        else:
+            canvas_pos = QPointF(-1, -1)
+
+        # --- ОБНОВЛЕНИЕ КАРТИНКИ КАМЕРЫ ---
         if data.raw_frame is not None:
+            # Просто зеркалим фрейм.
+            # ВАЖНО: Мы НЕ рисуем здесь cv2.circle. 
+            # Курсор рисует RenderEngine поверх всего.
             display_frame = cv2.flip(data.raw_frame, 1)
             
-            # Рисуем индикатор только если координаты валидны (то есть жест разрешен и распознан)
-            if data.cursor_x != -1:
-                overlay = display_frame.copy()
-                cv_draw_x = self.cam_width - data.cursor_x
-                cv_draw_y = data.cursor_y
-                
-                # Вычисляем радиус (мгновенно берет значение из модели)
-                visual_radius = int((self.model.current_thickness / self.scale_ratio) / 2)
-                visual_radius = max(3, visual_radius)
-                
-                if data.gesture == "erasing":
-                    color = (0, 0, 255)
-                    alpha = 0.4
-                else:
-                    color = (0, 255, 0)
-                    alpha = 0.5
-
-                cv2.circle(overlay, (cv_draw_x, cv_draw_y), visual_radius, color, -1, cv2.LINE_AA)
-                cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0, display_frame)
-                cv2.circle(display_frame, (cv_draw_x, cv_draw_y), 2, (255, 255, 255), -1, cv2.LINE_AA)
-
             rgb_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb_frame.shape
             qt_image = QImage(rgb_frame.data, w, h, ch * w, QImage.Format_RGB888)
             self.model.set_camera_frame(qt_image.copy())
 
+        # --- ПЕРЕДАЕМ ДАННЫЕ О КУРСОРЕ В МОДЕЛЬ ---
+        # Модель сохранит эти данные, а RenderEngine отрисует их поверх слоев
+        self.model.update_cursor(canvas_pos.x(), canvas_pos.y(), data.gesture)
+
         # --- ОБНОВЛЕНИЕ UI ---
         self.window.update_gesture_hint(data.gesture)
         
-        # Если жест пропал или был отключен -> Обрываем штрих
+        # Если рука потеряна или жест невалиден
         if data.cursor_x == -1 or data.cursor_y == -1:
             if self.model.current_stroke:
                 self.model.end_stroke()
@@ -108,15 +106,9 @@ class AppCore:
             return
 
         # --- ЛОГИКА РИСОВАНИЯ ---
-        norm_x = 1.0 - (data.cursor_x / self.cam_width)
-        norm_y = data.cursor_y / self.cam_height
-        
-        canvas_pos = QPointF(norm_x * self.model.width, norm_y * self.model.height)
-
         if self.model.current_stroke:
+            # Проверяем, не сменился ли жест внезапно
             is_consistent = False
-            # Проверяем, совпадает ли инструмент.
-            # Заметьте: allow_drawing уже проверен выше (gesture был бы idle)
             if self.model.current_tool == "brush" and data.gesture == "drawing":
                 is_consistent = True
             elif self.model.current_tool == "eraser" and data.gesture == "erasing":
@@ -129,7 +121,7 @@ class AppCore:
                 
             self.window.canvas_widget.update()
         else:
-            # Начинаем новый штрих только если есть жест (и он разрешен)
+            # Начинаем новый штрих
             if data.gesture == "drawing":
                 if self.model.current_tool != "brush": 
                     self.window.set_tool("Brush")

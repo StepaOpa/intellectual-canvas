@@ -1,15 +1,16 @@
+import os
 from typing import Optional, Dict, List
 from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QPainter, QColor, QPen, QPixmap, QPaintEvent, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFrame, QSizePolicy, QStatusBar,
-    QFileDialog, QDialog, QCheckBox, QSlider, QDialogButtonBox, QMessageBox
+    QFileDialog, QDialog, QCheckBox, QSlider, QDialogButtonBox, QMessageBox, QColorDialog
 )
 
 from app.canvas.canvas import CanvasModel, RenderEngine
 
-# --- ВИДЖЕТ ХОЛСТА (Без изменений) ---
+# --- ВИДЖЕТ ХОЛСТА ---
 class CanvasWidget(QWidget):
     def __init__(self, model: CanvasModel, engine: RenderEngine, parent=None):
         super().__init__(parent)
@@ -21,6 +22,8 @@ class CanvasWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         self._engine.render_to_painter(painter, self.rect())
+        
+        # Отрисовка сетки только если включена
         if self._model.show_grid:
             self._draw_grid(painter)
 
@@ -37,7 +40,7 @@ class CanvasWidget(QWidget):
         painter.save()
         painter.translate(self._engine.offset)
         painter.scale(self._engine.scale_factor, self._engine.scale_factor)
-        pen = QPen(QColor(0, 0, 0, 15))
+        pen = QPen(QColor(0, 0, 0, 30))
         pen.setWidthF(1.0 / self._engine.scale_factor) 
         painter.setPen(pen)
         w, h = self._model.width, self._model.height
@@ -47,11 +50,7 @@ class CanvasWidget(QWidget):
             painter.drawLine(0, y, w, y)
         painter.restore()
 
-    def mousePressEvent(self, event: QMouseEvent): pass 
-    def mouseMoveEvent(self, event: QMouseEvent): pass
-    def mouseReleaseEvent(self, event: QMouseEvent): pass
-
-# --- УЛУЧШЕННЫЕ КНОПКИ ---
+# --- КОМПОНЕНТЫ UI ---
 class ToolButton(QPushButton):
     def __init__(self, tooltip: str, icon_text: str, parent=None, size: int = 56, checkable=False):
         super().__init__(parent)
@@ -74,8 +73,6 @@ class ToolButton(QPushButton):
     def _init_style(self):
         is_pushed = self.isChecked() or self._is_active
         
-        # Определение цветов для разных состояний
-        # Обычная кнопка (Инструмент)
         bg_normal = "#FFFFFF"
         bg_normal_hover = "#F5F6FA"
         border_normal = "#E0E0E0"
@@ -86,43 +83,26 @@ class ToolButton(QPushButton):
         border_active = "#5A7FFF"
         text_active = "white"
 
-        # Кнопка-переключатель (Жесты)
-        # Зеленый (ВКЛ)
-        bg_on = "#2ECC71"
-        bg_on_hover = "#4CD988"
-        border_on = "#27AE60"
-        
-        # Красный (ВЫКЛ)
-        bg_off = "#FF7675"
-        bg_off_hover = "#FF9F9E"
-        border_off = "#D63031"
+        bg_on, bg_on_hover, border_on = "#2ECC71", "#4CD988", "#27AE60"
+        bg_off, bg_off_hover, border_off = "#FF7675", "#FF9F9E", "#D63031"
 
-        # Формируем стиль
         style = ""
-        
         if self.isCheckable():
-            if self.isChecked():
-                # ВКЛЮЧЕНО (Зеленый стиль)
-                style = f"""
-                    QPushButton {{
-                        background-color: {bg_on}; color: white; border: 2px solid {border_on};
-                        border-radius: {self._size // 2}px; font-size: 16px; font-weight: bold;
-                    }}
-                    QPushButton:hover {{ background-color: {bg_on_hover}; }}
-                """
-            else:
-                # ВЫКЛЮЧЕНО (Красный стиль)
-                style = f"""
-                    QPushButton {{
-                        background-color: {bg_off}; color: white; border: 2px solid {border_off};
-                        border-radius: {self._size // 2}px; font-size: 16px; font-weight: bold;
-                    }}
-                    QPushButton:hover {{ background-color: {bg_off_hover}; }}
-                """
+            color_bg = bg_on if self.isChecked() else bg_off
+            color_hover = bg_on_hover if self.isChecked() else bg_off_hover
+            color_border = border_on if self.isChecked() else border_off
+            
+            font_size = "12px" if len(self.text()) > 5 else "16px"
+            
+            style = f"""
+                QPushButton {{
+                    background-color: {color_bg}; color: white; border: 2px solid {color_border};
+                    border-radius: {self._size // 2}px; font-size: {font_size}; font-weight: bold;
+                }}
+                QPushButton:hover {{ background-color: {color_hover}; }}
+            """
         else:
-            # Обычные инструменты
             if is_pushed:
-                # Активный инструмент (Синий)
                 style = f"""
                     QPushButton {{
                         background-color: {bg_active}; color: {text_active}; border: 3px solid {border_active};
@@ -131,7 +111,6 @@ class ToolButton(QPushButton):
                     QPushButton:hover {{ background-color: {bg_active_hover}; }}
                 """
             else:
-                # Неактивный инструмент (Белый)
                 style = f"""
                     QPushButton {{
                         background-color: {bg_normal}; color: {text_normal}; border: 2px solid {border_normal};
@@ -139,31 +118,44 @@ class ToolButton(QPushButton):
                     }}
                     QPushButton:hover {{ background-color: {bg_normal_hover}; border: 2px solid #BDC3C7; }}
                 """
-
         self.setStyleSheet(style)
 
 class ColorSwatchButton(ToolButton):
-    def __init__(self, color_hex: str, tooltip: str = "", size: int = 44, parent=None):
+    def __init__(self, color_hex: str, tooltip: str = "", size: int = 44, parent=None, is_picker=False):
         self._color_hex = color_hex
-        super().__init__(tooltip=tooltip or color_hex, icon_text="", parent=parent, size=size)
+        self._is_picker = is_picker
+        
+        text = "..." if is_picker else ""
+        
+        super().__init__(tooltip=tooltip or color_hex, icon_text=text, parent=parent, size=size)
         self._is_selected = False
         self._init_style()
 
     @property
     def color_hex(self): return self._color_hex
 
+    def set_color_hex(self, hex_val):
+        self._color_hex = hex_val
+        self.setToolTip(hex_val)
+        self._init_style()
+
     def set_selected(self, selected: bool):
         self._is_selected = selected
         self._init_style()
         
     def _init_style(self):
-        # Для цвета hover сделаем просто чуть светлее границы
         border = "3px solid #5A7FFF" if getattr(self, '_is_selected', False) else "2px solid #FFFFFF"
+        
+        bg_style = f"background-color: {self._color_hex};"
+        if self._is_picker:
+             bg_style = "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff9a9e, stop:1 #fad0c4);"
+
         self.setStyleSheet(f"""
             QPushButton {{ 
-                background-color: {self._color_hex}; 
+                {bg_style}
                 border: {border}; 
                 border-radius: {self._size // 2}px; 
+                color: #333; font-weight: bold; font-size: 14px;
             }}
             QPushButton:hover {{ border: 3px solid #BDC3C7; }}
         """)
@@ -200,13 +192,14 @@ class MainWindow(QMainWindow):
         
         self._tool_buttons: Dict[str, ToolButton] = {}
         self._color_swatches: List[ColorSwatchButton] = []
+        self._active_color_btn: Optional[ColorSwatchButton] = None
         
         self._init_ui()
         self.update_ui_state()
 
     def _init_ui(self):
-        self.setWindowTitle("Intelligent Canvas")
-        self.resize(1400, 900)
+        self.setWindowTitle("Intelligent Canvas v3.3")
+        self.resize(1400, 950)
         self.setStyleSheet("QMainWindow { background-color: #E9EEF3; }")
 
         central = QWidget()
@@ -242,12 +235,20 @@ class MainWindow(QMainWindow):
         
         swatch_container = QWidget()
         sl = QHBoxLayout(swatch_container)
-        colors = ["#FF4757", "#FF7A3D", "#FFC312", "#2ECC71", "#3498DB", "#9B59B6", "#E91E63", "#2C3E50", "#FFFFFF"]
+        
+        colors = ["#FF4757", "#FF7A3D", "#FFC312", "#2ECC71", "#3498DB", "#9B59B6", "#E91E63", "#2C3E50", "#000000"]
         for c in colors:
             btn = ColorSwatchButton(c)
-            btn.clicked.connect(lambda ch, col=c, b=btn: self.set_color(col, b))
+            btn.clicked.connect(lambda ch, col=c, b=btn: self.set_color(b.color_hex, b))
             sl.addWidget(btn)
             self._color_swatches.append(btn)
+        
+        sl.addSpacing(10)
+        
+        self.picker_btn = ColorSwatchButton("#ffffff", "Выбрать цвет", is_picker=True)
+        self.picker_btn.clicked.connect(self._open_color_picker)
+        sl.addWidget(self.picker_btn)
+
         l.addWidget(swatch_container, stretch=1)
         layout.addWidget(frame)
 
@@ -258,36 +259,42 @@ class MainWindow(QMainWindow):
         l = QVBoxLayout(frame)
         l.setSpacing(15)
         
-        # Инструменты
         for tool_id, icon, tip in [("Brush", "🖌", "Кисть"), ("Eraser", "🧽", "Ластик")]:
-            btn = ToolButton(tip, icon, size=64) # Чуть больше размер
+            btn = ToolButton(tip, icon, size=64)
             btn.clicked.connect(lambda ch, t=tool_id: self.set_tool(t))
             l.addWidget(btn)
             self._tool_buttons[tool_id] = btn
         
         l.addStretch()
         
-        # Разделитель
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         line.setStyleSheet("color: #BDC3C7;")
         l.addWidget(line)
         l.addSpacing(10)
+        
+        self.btn_grid = ToolButton("Сетка", "#", size=56, checkable=True)
+        self.btn_grid.setChecked(True)
+        self.btn_grid.setText("#\nВКЛ")
+        self.btn_grid.clicked.connect(self._toggle_grid)
+        
+        grid_container = QHBoxLayout()
+        grid_container.addStretch()
+        grid_container.addWidget(self.btn_grid)
+        grid_container.addStretch()
+        l.addLayout(grid_container)
+        
+        l.addSpacing(10)
 
-        # КНОПКИ ЖЕСТОВ
-        # Рисование
-        self.btn_toggle_draw = ToolButton("Управление жестом рисования", "☝️", size=64, checkable=True)
+        self.btn_toggle_draw = ToolButton("Управление рисованием", "☝️", size=64, checkable=True)
         self.btn_toggle_draw.setChecked(True)
-        self.btn_toggle_draw.setText("ВКЛ")
         self.btn_toggle_draw.clicked.connect(self._update_gesture_toggles)
         l.addWidget(self.btn_toggle_draw)
         
         l.addSpacing(5)
 
-        # Ластик
-        self.btn_toggle_erase = ToolButton("Управление жестом ластика", "🖐", size=64, checkable=True)
+        self.btn_toggle_erase = ToolButton("Управление ластиком", "🖐", size=64, checkable=True)
         self.btn_toggle_erase.setChecked(True)
-        self.btn_toggle_erase.setText("ВКЛ")
         self.btn_toggle_erase.clicked.connect(self._update_gesture_toggles)
         l.addWidget(self.btn_toggle_erase)
         
@@ -316,19 +323,16 @@ class MainWindow(QMainWindow):
 
     def _create_bottom_bar(self, layout):
         frame = QFrame()
-        frame.setFixedHeight(120)
-        # Белый фон, тень через border (имитация)
+        frame.setFixedHeight(100) 
         frame.setStyleSheet("background: #FFFFFF; border: 1px solid #BDC3C7; border-radius: 16px;")
         l = QHBoxLayout(frame)
         l.setSpacing(30)
-        l.setContentsMargins(30, 15, 30, 15)
+        l.setContentsMargins(30, 5, 30, 5)
         
-        # Жестовая подсказка
         self.gesture_hint = GestureHintWidget()
-        self.gesture_hint.setFixedWidth(280)
+        self.gesture_hint.setFixedWidth(260)
         l.addWidget(self.gesture_hint)
         
-        # Вертикальный разделитель
         sep1 = QFrame()
         sep1.setFrameShape(QFrame.VLine)
         sep1.setStyleSheet("color: #ECF0F1;")
@@ -336,21 +340,19 @@ class MainWindow(QMainWindow):
         
         l.addStretch()
         
-        # --- СЛАЙДЕРЫ ---
-        # 1. Слайдер Кисти
-        brush_layout = self._create_slider_control("РАЗМЕР КИСТИ", 2, 50, self._model.brush_size, 
-                                                   self._on_brush_size_change, color="#2980B9")
-        l.addLayout(brush_layout)
+        l.addLayout(self._create_slider_control("РАЗМЕР КИСТИ", 2, 50, self._model.brush_size, 
+                                                   self._on_brush_size_change, color="#2980B9"))
+        l.addSpacing(15)
 
-        l.addSpacing(20)
-
-        # 2. Слайдер Ластика
-        eraser_layout = self._create_slider_control("РАЗМЕР ЛАСТИКА", 10, 200, self._model.eraser_size,
-                                                    self._on_eraser_size_change, color="#8E44AD")
-        l.addLayout(eraser_layout)
+        l.addLayout(self._create_slider_control("РАЗМЕР ЛАСТИКА", 10, 200, self._model.eraser_size,
+                                                    self._on_eraser_size_change, color="#8E44AD"))
+        
+        l.addSpacing(15)
+        
+        l.addLayout(self._create_slider_control("ПРОЗРАЧНОСТЬ ФОНА", 0, 100, 100,
+                                                    self._on_opacity_change, color="#7f8c8d"))
 
         l.addStretch()
-        
         layout.addWidget(frame)
         
         self.status_bar = QStatusBar()
@@ -358,46 +360,46 @@ class MainWindow(QMainWindow):
     
     def _create_slider_control(self, label_text, min_val, max_val, init_val, callback, color="#333"):
         container = QVBoxLayout()
-        container.setSpacing(8)
+        container.setSpacing(2) 
         container.setAlignment(Qt.AlignCenter)
         
-        # Метка названия
         label = QLabel(label_text)
         label.setAlignment(Qt.AlignCenter)
-        label.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {color}; letter-spacing: 1px;")
+        label.setStyleSheet(f"border: none; font-size: 11px; font-weight: bold; color: {color}; letter-spacing: 1px;")
         
-        # Значение
-        value_label = QLabel(f"{int(init_val)} px")
+        suffix = "%" if "ПРОЗРАЧНОСТЬ" in label_text else " px"
+        
+        value_label = QLabel(f"{int(init_val)}{suffix}")
         value_label.setAlignment(Qt.AlignCenter)
-        value_label.setStyleSheet("font-size: 18px; font-weight: 800; color: #2C3E50;")
+        value_label.setStyleSheet("border: none; font-size: 16px; font-weight: 800; color: #2C3E50;")
         
-        # Слайдер
         slider = QSlider(Qt.Horizontal)
         slider.setRange(min_val, max_val)
         slider.setValue(int(init_val))
-        slider.setFixedWidth(200)
+        slider.setFixedWidth(180)
+        
         slider.setStyleSheet(f"""
             QSlider::groove:horizontal {{
-                border: 1px solid #bbb;
-                background: white;
-                height: 8px;
-                border-radius: 4px;
+                border: none;
+                background: #E0E0E0;
+                height: 6px;
+                border-radius: 3px;
             }}
             QSlider::sub-page:horizontal {{
                 background: {color};
-                border-radius: 4px;
+                border-radius: 3px;
             }}
             QSlider::handle:horizontal {{
                 background: white;
                 border: 2px solid {color};
-                width: 18px;
-                height: 18px;
-                margin: -6px 0; 
-                border-radius: 9px;
+                width: 16px;
+                height: 16px;
+                margin: -5px 0; 
+                border-radius: 8px;
             }}
         """)
         
-        slider.valueChanged.connect(lambda v: (value_label.setText(f"{v} px"), callback(v)))
+        slider.valueChanged.connect(lambda v: (value_label.setText(f"{v}{suffix}"), callback(v)))
         
         container.addWidget(label)
         container.addWidget(value_label)
@@ -409,13 +411,20 @@ class MainWindow(QMainWindow):
         self._model.allow_drawing = self.btn_toggle_draw.isChecked()
         self._model.allow_erasing = self.btn_toggle_erase.isChecked()
         
-        # Обновляем текст и стиль
-        # Текст ВКЛ / ВЫКЛ с иконкой
         self.btn_toggle_draw.setText("☝️\nВКЛ" if self.btn_toggle_draw.isChecked() else "☝️\nВЫКЛ")
         self.btn_toggle_draw._init_style()
         
         self.btn_toggle_erase.setText("🖐\nВКЛ" if self.btn_toggle_erase.isChecked() else "🖐\nВЫКЛ")
         self.btn_toggle_erase._init_style()
+    
+    def _toggle_grid(self):
+        is_checked = self.btn_grid.isChecked()
+        self._model.toggle_grid(is_checked)
+        
+        self.btn_grid.setText("#\nВКЛ" if is_checked else "#\nВЫКЛ")
+        self.btn_grid._init_style()
+        
+        self.canvas_widget.update()
 
     def _on_brush_size_change(self, val):
         self._model.set_brush_size(val)
@@ -423,19 +432,57 @@ class MainWindow(QMainWindow):
     def _on_eraser_size_change(self, val):
         self._model.set_eraser_size(val)
 
+    def _on_opacity_change(self, val):
+        self._model.set_camera_opacity(val / 100.0)
+        self.canvas_widget.update()
+
     def _on_save(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить изображение", "", "PNG Files (*.png)")
+        save_dir = os.path.join(os.getcwd(), "saved_drawings")
+        if not os.path.exists(save_dir):
+            try:
+                os.makedirs(save_dir)
+            except OSError:
+                pass 
+
+        # Обновленный фильтр: PNG и SVG
+        path, filter_selected = QFileDialog.getSaveFileName(
+            self, "Сохранить изображение", save_dir, 
+            "PNG Image (*.png);;SVG Vector (*.svg)"
+        )
+        
         if path:
-            self._engine.save_to_file(path)
+            if path.endswith(".svg"):
+                success = self._engine.save_to_svg(path)
+            else:
+                success = self._engine.save_to_file(path)
+                
+            if success:
+                self.status_bar.showMessage(f"Сохранено в: {path}", 5000)
+            else:
+                self.status_bar.showMessage("Ошибка при сохранении!", 5000)
 
     def _on_open(self):
         path, _ = QFileDialog.getOpenFileName(self, "Открыть фон", "", "Images (*.png *.jpg)")
         if path:
             self._model.load_background(path)
             self.canvas_widget.update()
+    
+    def _open_color_picker(self):
+        if not self._active_color_btn:
+            self.status_bar.showMessage("Сначала выберите ячейку цвета для замены!")
+            return
+
+        current_hex = self._active_color_btn.color_hex
+        color = QColorDialog.getColor(QColor(current_hex), self, "Заменить текущий цвет")
+        
+        if color.isValid():
+            hex_color = color.name()
+            self._active_color_btn.set_color_hex(hex_color)
+            self.set_color(hex_color, self._active_color_btn)
 
     def set_color(self, hex_color, btn_obj):
         self._model.set_color(QColor(hex_color))
+        self._active_color_btn = btn_obj
         for b in self._color_swatches:
             b.set_selected(b is btn_obj)
         self.status_bar.showMessage(f"Цвет: {hex_color}")
@@ -450,8 +497,11 @@ class MainWindow(QMainWindow):
     def update_ui_state(self):
         self.set_tool("Brush")
         if self._color_swatches:
-            self.set_color(self._color_swatches[4].color_hex, self._color_swatches[4])
+            default_btn = self._color_swatches[-1]
+            self.set_color(default_btn.color_hex, default_btn)
+        
         self._update_gesture_toggles()
+        self._toggle_grid()
             
     def update_gesture_hint(self, gesture: str):
         self.gesture_hint.update_hint(gesture)

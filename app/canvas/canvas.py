@@ -1,7 +1,11 @@
+import os
+import math
 from dataclasses import dataclass, field
 from typing import List, Optional
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+
+from PySide6.QtCore import QPointF, QRectF, Qt, QSize, QRect
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QBrush
+from PySide6.QtSvg import QSvgGenerator  # Добавлен импорт для SVG
 
 @dataclass
 class Stroke:
@@ -21,8 +25,12 @@ class CanvasModel:
         
         self.grid_step = 80
         self.show_grid = True
+        self.camera_opacity = 1.0
         
-        # Флаги разрешения жестов
+        self.cursor_pos: QPointF = QPointF(-1, -1)
+        self.cursor_active: bool = False
+        self.cursor_gesture: str = "idle"
+        
         self.allow_drawing = True
         self.allow_erasing = True
 
@@ -31,13 +39,12 @@ class CanvasModel:
         self.redo_stack: List[Stroke] = []
         self.current_stroke: Optional[Stroke] = None
 
-        # Настройки
         self.current_color = QColor("#3498DB")
         self.current_tool = "brush"
-        
-        # Настройки инструментов
         self.brush_size = 12.0
         self.eraser_size = 60.0
+        
+        self.min_draw_distance = 4.0 
 
         self._image = QImage(width, height, QImage.Format.Format_ARGB32)
         self._image.fill(Qt.transparent)
@@ -45,29 +52,30 @@ class CanvasModel:
     def set_camera_frame(self, image: QImage):
         self.camera_frame = image
 
+    def set_camera_opacity(self, opacity: float):
+        self.camera_opacity = max(0.0, min(1.0, opacity))
+
+    def toggle_grid(self, show: bool):
+        self.show_grid = show
+
+    def update_cursor(self, x: float, y: float, gesture: str):
+        self.cursor_pos = QPointF(x, y)
+        self.cursor_gesture = gesture
+        self.cursor_active = (x != -1 and y != -1)
+
     def set_tool(self, tool: str):
         self.current_tool = tool
 
     def set_color(self, color: QColor):
         self.current_color = color
-        
-        # --- ЛОГИКА СМЕНЫ ЦВЕТА НА ЛЕТУ ---
-        # Если мы прямо сейчас рисуем штрих, нужно его "разрезать".
-        # Старая часть останется старого цвета, новая пойдет с новым.
         if self.current_stroke and self.current_stroke.tool == "brush":
-            # 1. Запоминаем последнюю точку (где мы сейчас находимся)
             if self.current_stroke.points:
                 last_pos = self.current_stroke.points[-1]
-                
-                # 2. Завершаем текущий штрих (он сохраняется в историю)
                 self.end_stroke()
-                
-                # 3. Начинаем новый штрих с той же точки (begin_stroke возьмет уже self.current_color)
                 self.begin_stroke(last_pos)
 
     def set_brush_size(self, size: float):
         self.brush_size = float(size)
-        # Размер применяем мгновенно к текущему штриху
         if self.current_stroke and self.current_stroke.tool == "brush":
             self.current_stroke.thickness = self.brush_size
 
@@ -95,8 +103,18 @@ class CanvasModel:
         self._draw_point_to_buffer(pos)
 
     def continue_stroke(self, pos: QPointF):
-        if self.current_stroke:
+        if self.current_stroke and self.current_stroke.points:
+            last_point = self.current_stroke.points[-1]
+            
+            dx = pos.x() - last_point.x()
+            dy = pos.y() - last_point.y()
+            dist = math.hypot(dx, dy)
+            
+            if dist < self.min_draw_distance:
+                return
+
             self.current_stroke.points.append(pos)
+            
             if len(self.current_stroke.points) >= 2:
                 p1 = self.current_stroke.points[-2]
                 p2 = self.current_stroke.points[-1]
@@ -213,23 +231,119 @@ class RenderEngine:
 
     def render_to_painter(self, painter: QPainter, target_rect: QRectF):
         painter.save()
-        bg_color = self.model.background_color or QColor("#F3F5F7")
-        painter.fillRect(target_rect, bg_color)
+        
+        painter.fillRect(target_rect, Qt.white)
+        
         painter.translate(self.offset)
         painter.scale(self.scale_factor, self.scale_factor)
-        if self.model.camera_frame:
+        
+        if self.model.camera_frame and self.model.camera_opacity > 0.01:
+            painter.save()
+            painter.setOpacity(self.model.camera_opacity)
             painter.drawImage(QRectF(0, 0, self.model.width, self.model.height), self.model.camera_frame)
+            painter.restore()
+            
         if self.model.background_image:
             painter.drawImage(0, 0, self.model.background_image)
+            
         painter.drawImage(0, 0, self.model.image)
+        
+        if self.model.cursor_active:
+             painter.setOpacity(1.0)
+             self._draw_cursor(painter)
+
         painter.restore()
 
-    def save_to_file(self, path: str) -> bool:
+    def _draw_cursor(self, painter: QPainter):
+        x, y = self.model.cursor_pos.x(), self.model.cursor_pos.y()
+        radius = self.model.current_thickness / 2
+        
+        if self.model.cursor_gesture == "erasing":
+            pen = QPen(QColor(255, 50, 50), 3)
+            brush = QBrush(QColor(255, 50, 50, 100))
+        
+        elif self.model.cursor_gesture == "drawing":
+            pen = QPen(Qt.white, 2)
+            brush = QBrush(self.model.current_color)
+            
+            painter.setPen(QPen(Qt.black, 4))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(QPointF(x, y), radius, radius)
+            
+            color_with_alpha = QColor(self.model.current_color)
+            color_with_alpha.setAlpha(150)
+            brush = QBrush(color_with_alpha)
+            
+        else:
+            pen = QPen(Qt.white, 3)
+            brush = QBrush(Qt.transparent)
+            radius = max(radius, 8)
+            painter.setPen(QPen(Qt.black, 5))
+            painter.drawEllipse(QPointF(x, y), radius, radius)
+
+        painter.setPen(pen)
+        painter.setBrush(brush)
+        painter.drawEllipse(QPointF(x, y), radius, radius)
+        
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(Qt.white if self.model.cursor_gesture != "erasing" else Qt.black)
+        painter.drawEllipse(QPointF(x, y), 2, 2)
+
+    def save_to_file(self, filename_hint: str = "artwork") -> bool:
+        """Сохранение в растровый формат (PNG/JPG)"""
         result = QImage(self.model.width, self.model.height, QImage.Format_ARGB32)
-        result.fill(Qt.white)
+        result.fill(Qt.white) 
+        
         painter = QPainter(result)
         if self.model.background_image:
             painter.drawImage(0, 0, self.model.background_image)
+            
         painter.drawImage(0, 0, self.model.image)
         painter.end()
-        return result.save(path)
+        
+        return result.save(filename_hint)
+
+    def save_to_svg(self, filename: str) -> bool:
+        """Сохранение в векторный формат SVG"""
+        generator = QSvgGenerator()
+        generator.setFileName(filename)
+        generator.setSize(QSize(self.model.width, self.model.height))
+        generator.setViewBox(QRect(0, 0, self.model.width, self.model.height))
+        generator.setTitle("Smart Canvas Artwork")
+        
+        painter = QPainter()
+        if not painter.begin(generator):
+            return False
+            
+        # 1. Заливаем белым фоном
+        painter.fillRect(QRect(0, 0, self.model.width, self.model.height), Qt.white)
+        
+        # 2. Если есть фоновая картинка, рисуем её
+        if self.model.background_image:
+            painter.drawImage(0, 0, self.model.background_image)
+            
+        # 3. Перерисовываем векторы
+        # ВАЖНО: Мы не рисуем растр self.model.image, мы перерисовываем штрихи из истории
+        for stroke in self.model.undo_stack:
+            pen = QPen(stroke.color)
+            
+            # Для ластика в SVG используем белую кисть (перекрытие)
+            if stroke.tool == "eraser":
+                pen.setColor(Qt.white)
+            
+            pen.setWidthF(stroke.thickness)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            
+            if len(stroke.points) > 1:
+                painter.drawPolyline(stroke.points)
+            elif len(stroke.points) == 1:
+                # Точка
+                painter.setBrush(pen.color())
+                painter.setPen(Qt.NoPen)
+                r = stroke.thickness / 2
+                painter.drawEllipse(stroke.points[0], r, r)
+        
+        painter.end()
+        return True
