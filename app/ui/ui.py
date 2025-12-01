@@ -258,7 +258,10 @@ class MainWindow(QMainWindow):
         frame.setStyleSheet("background: transparent;")
         l = QVBoxLayout(frame)
         l.setSpacing(15)
+        # Эта строка гарантирует, что ВСЕ кнопки будут строго по центру столбца
+        l.setAlignment(Qt.AlignHCenter) 
         
+        # Инструменты (Кисть, Ластик)
         for tool_id, icon, tip in [("Brush", "🖌", "Кисть"), ("Eraser", "🧽", "Ластик")]:
             btn = ToolButton(tip, icon, size=64)
             btn.clicked.connect(lambda ch, t=tool_id: self.set_tool(t))
@@ -273,19 +276,16 @@ class MainWindow(QMainWindow):
         l.addWidget(line)
         l.addSpacing(10)
         
-        self.btn_grid = ToolButton("Сетка", "#", size=56, checkable=True)
+        # Кнопка Сетки (теперь добавляется просто как виджет, выравнивание делает layout)
+        self.btn_grid = ToolButton("Сетка", "#", size=64, checkable=True)
         self.btn_grid.setChecked(True)
-        self.btn_grid.setText("#\nВКЛ")
+        self.btn_grid.setText("Grid\nВКЛ")
         self.btn_grid.clicked.connect(self._toggle_grid)
-        
-        grid_container = QHBoxLayout()
-        grid_container.addStretch()
-        grid_container.addWidget(self.btn_grid)
-        grid_container.addStretch()
-        l.addLayout(grid_container)
+        l.addWidget(self.btn_grid)
         
         l.addSpacing(10)
 
+        # Жест рисования
         self.btn_toggle_draw = ToolButton("Управление рисованием", "☝️", size=64, checkable=True)
         self.btn_toggle_draw.setChecked(True)
         self.btn_toggle_draw.clicked.connect(self._update_gesture_toggles)
@@ -293,6 +293,7 @@ class MainWindow(QMainWindow):
         
         l.addSpacing(5)
 
+        # Жест ластика
         self.btn_toggle_erase = ToolButton("Управление ластиком", "🖐", size=64, checkable=True)
         self.btn_toggle_erase.setChecked(True)
         self.btn_toggle_erase.clicked.connect(self._update_gesture_toggles)
