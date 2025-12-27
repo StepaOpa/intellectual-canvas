@@ -1,5 +1,6 @@
 # app/vision/camera_service.py
 import time
+from unicodedata import mirrored
 from .frame_data import FrameData
 from .gesture_detector import GestureDetector
 from .smoother import OneEuroFilter
@@ -10,7 +11,7 @@ import mediapipe as mp
 import numpy as np
 
 class CameraService:
-    def __init__(self, camera_index: int = 0, resolution: tuple = (640, 480)):
+    def __init__(self, camera_index: int = 0, resolution: tuple = (640, 480), mirror: bool = True):
         self.cap = cv2.VideoCapture(camera_index)
         if not self.cap.isOpened():
             raise RuntimeError(f"Не удалось открыть камеру {camera_index}")
@@ -35,6 +36,8 @@ class CameraService:
         # Состояние
         self.last_frame_time = 0
         self.frame_count = 0
+        
+        self.mirror = mirror
 
     def start(self):
         """Запуск захвата — можно вызвать после инициализации."""
@@ -57,6 +60,9 @@ class CameraService:
         if not ret:
             frame_data.raw_frame = None
             return frame_data
+        
+        if self.mirror:
+            frame = cv2.flip(frame, 1)
 
         frame_data.raw_frame = frame.copy()  # для отображения
 
@@ -90,32 +96,9 @@ class CameraService:
             frame_data.scale_factor = gesture_result.scale_factor
             frame_data.hands_distance_px = gesture_result.hands_distance_px
 
-        # Обновляем FPS
-        self.frame_count += 1
-        if self.frame_count % 30 == 0:  # каждые 30 кадров
-            frame_data.fps = self.metrics.calculate_fps()
-
+        frame_data.fps = self.metrics.update()
         return frame_data
     
-    # В CameraService
-
-    def list_devices(self) -> list:
-        """Возвращает список доступных камер."""
-        devices = []
-        for i in range(10):  # проверяем первые 10 устройств
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                devices.append(i)
-                cap.release()
-        return devices
-
-    def set_camera_device(self, index: int):
-        """Переключиться на другое устройство."""
-        self.release()
-        self.cap = cv2.VideoCapture(index)
-        if not self.cap.isOpened():
-            raise RuntimeError(f"❌ Не удалось переключиться на камеру {index}")
-
     def release(self):
         if self.cap.isOpened():
             self.cap.release()
