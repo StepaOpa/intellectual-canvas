@@ -1,6 +1,6 @@
 # intellectual-canvas
 
-## Гайд по настройке venv
+## Гайд по билду проекта
 
 
 ### Шаги
@@ -14,7 +14,7 @@ source .venv/bin/activate
 ```
 pip install -r requirements.txt
 ```
-
-
-### всегда обновляйте requirements.txt:
-```pip freeze > requirements.txt```
+#### 3. Выполните билд:
+```
+pyinstaller --onefile --collect-all mediapipe main.py
+```
